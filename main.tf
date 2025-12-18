@@ -100,10 +100,12 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
     storage_account_type = "Standard_LRS"
   }
 
+  custom_data = filebase64("cloud-init.yaml")
+
   source_image_reference {
     publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts"
+    offer     = "ubuntu-24_04-lts"
+    sku       = "server"
     version   = "latest"
   }
 }
