@@ -17,6 +17,9 @@ jobs:
           # Strip 'https://' from the URL to insert credentials
           TARGET_URL="${PUBLIC_REPO_URL#https://}"
           
+          # Unset the header that actions/checkout adds to prevent conflict with the PAT
+          git config --unset-all http.https://github.com/.extraheader
+          
           # Add remote with authentication
           # Using oauth2 as the username for PAT
           git remote add public "https://oauth2:${PUBLIC_REPO_TOKEN}@${TARGET_URL}"
