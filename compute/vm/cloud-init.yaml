@@ -48,12 +48,14 @@ runcmd:
       fi
       
       # Create Mount Point
-      mkdir -p /var/lib/docker
+      mkdir -p /data
       
       # Mount
-      if ! mountpoint -q /var/lib/docker; then
-        mount $PARTITION /var/lib/docker
-        echo "$PARTITION /var/lib/docker ext4 defaults,nofail 0 2" >> /etc/fstab
+      if ! mountpoint -q /data; then
+        mount $PARTITION /data
+        # Set permissions for azureuser
+        chown -R azureuser:azureuser /data
+        echo "$PARTITION /data ext4 defaults,nofail 0 2" >> /etc/fstab
       fi
       
       echo "Disk Setup Complete."
