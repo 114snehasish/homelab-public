@@ -1,0 +1,28 @@
+name: Mirror to Public
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to public repo
+        run: |
+          # Strip 'https://' from the URL to insert credentials
+          TARGET_URL="${PUBLIC_REPO_URL#https://}"
+          
+          # Add remote with authentication
+          # Using oauth2 as the username for PAT
+          git remote add public "https://oauth2:${PUBLIC_REPO_TOKEN}@${TARGET_URL}"
+          
+          # Push to the public remote
+          git push public main --force
+        env:
+          PUBLIC_REPO_URL: ${{ secrets.PUBLIC_REPO_URL }}
+          PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
