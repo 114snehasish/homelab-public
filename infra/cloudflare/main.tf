@@ -27,10 +27,10 @@ data "azurerm_dns_zone" "homelab" {
 
 # Create NS records in Cloudflare for the submodule
 resource "cloudflare_record" "ns_delegation" {
-  count   = length(data.azurerm_dns_zone.homelab.name_servers)
-  zone_id = var.cloudflare_zone_id
-  name    = "az"
-  content = data.azurerm_dns_zone.homelab.name_servers[count.index]
-  type    = "NS"
-  ttl     = 3600
+  for_each = data.azurerm_dns_zone.homelab.name_servers
+  zone_id  = var.cloudflare_zone_id
+  name     = "az"
+  content  = each.value
+  type     = "NS"
+  ttl      = 3600
 }
