@@ -42,8 +42,8 @@ resource "azurerm_public_ip" "vm_public_ip" {
   name                = "homelab-vm-public-ip"
   location            = data.azurerm_resource_group.rg.location
   resource_group_name = data.azurerm_resource_group.rg.name
-  allocation_method   = "Dynamic"
-  sku                 = "Basic"
+  allocation_method   = "Static"
+  sku                 = "Standard"
 }
 
 data "azurerm_dns_zone" "homelab" {
