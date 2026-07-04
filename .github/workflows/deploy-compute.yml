@@ -25,6 +25,8 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
+      TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
 
     steps:
       - name: Checkout Code

@@ -32,3 +32,14 @@ variable "ssh_key_name" {
   type    = string
   default = "homelab-vm-ssh-key-2"
 }
+
+variable "dns_zone_name" {
+  description = "The Azure DNS Zone name"
+  type        = string
+}
+
+variable "dns_rg_name" {
+  description = "The Resource Group name where Azure DNS Zone resides"
+  type        = string
+  default     = "homelab-rg"
+}

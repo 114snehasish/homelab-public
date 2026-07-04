@@ -1,0 +1,2 @@
+dns_zone_name = "az.snehasish-chakraborty.com"
+dns_rg_name   = "homelab-rg"
