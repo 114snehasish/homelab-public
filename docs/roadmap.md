@@ -43,6 +43,7 @@ Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner
 | [#24](https://github.com/114snehasish/homelab-azure/issues/24) | E11 Drift detection & ops automation | governance | 4 | Flex |
 | [#25](https://github.com/114snehasish/homelab-azure/issues/25) | E12 Docs, architecture & ADRs | governance | 4 + rolling | Core (trimmed) |
 | [#26](https://github.com/114snehasish/homelab-azure/issues/26) | E13 AKS pilot | apps/platform | stretch | Stretch |
+| [#88](https://github.com/114snehasish/homelab-azure/issues/88) | E14 Ephemeral Claude Code agent runners on k3s | apps/platform | month 2 | Month-2 opener |
 
 ## Dependency graph
 
@@ -61,6 +62,9 @@ graph LR
   E02 --> E11[#24 Drift detection]
   E06 --> E11
   E09 --> E13[#26 AKS pilot]
+  E09 --> E14[#88 Agent runners]
+  E05 --> E14
+  E08 --> E14
   E10[#23 Cost governance]
   E12[#25 Docs and ADRs]
 ```
@@ -85,6 +89,9 @@ Sequencing rules that are **not optional**:
 | R6 | Public mirror leaks attack surface / secrets | Wildcard cert + wildcard DNS (no enumeration); admin UIs tailnet-only (#46); secrets only in Key Vault (E05) |
 | R7 | Vaultwarden before a tested restore | #45 blocked on #58 |
 | R8 | OIDC cutover bricks all CI at once | #35 validates per-module while old secrets exist; #36 deletes them only after |
+| R9 | Agent pods borrow the VM's managed identity via IMDS | #89 NetworkPolicy blocks 169.254.169.254 from the runner namespace |
+| R10 | Anthropic API spend invisible to Azure budgets | #93 console spend ceiling + monthly cost review |
+| R11 | Prompt injection via untrusted issue text | PR-only GitHub App, human-only merges, owner-applied trigger labels (#90–#92) |
 
 ## Capacity honesty & cut order
 
@@ -98,6 +105,14 @@ Full scope is **13 epics / 60 PRs ≈ 90–120 hours** — more than a typical s
 4. Merge E08.6 into E08.2 (dashboards)
 5. Shrink E04 to it-tools only
 6. Slide E09.4/E09.5 to month 2 — *k3s installed + Argo CD syncing is a fine month-1 exit state*
+
+## Month 2 preview — E14: ephemeral Claude Code agent runners ([#88](https://github.com/114snehasish/homelab-azure/issues/88))
+
+The month-2 opener extends the platform's philosophy one step further: cattle VM, pet disk, **mayfly agents**. AI agent sessions run as ephemeral actions-runner-controller (ARC) pods on k3s — created per task, destroyed after, nothing persisting outside git/GitHub. Triggered by `@claude` mentions and an `agent:take` backlog label; authenticated with an Anthropic API key from Key Vault; strictly **PR-only** (the agent can never merge and holds no Azure credentials — its PRs pass the same CI gates as human ones). Hard-gated on E09 (k3s + Argo CD + external-secrets), consuming E05 (secrets), E08 (session logs in Loki), and E01 (branch protection).
+
+Children: [#89](https://github.com/114snehasish/homelab-azure/issues/89) ARC + IMDS-blocked runner pool · [#90](https://github.com/114snehasish/homelab-azure/issues/90) PR-only GitHub App + API key via KV + branch protection · [#91](https://github.com/114snehasish/homelab-azure/issues/91) `@claude` mention workflow · [#92](https://github.com/114snehasish/homelab-azure/issues/92) `agent:take` backlog worker · [#93](https://github.com/114snehasish/homelab-azure/issues/93) runbook/ADR/spend guardrails · [#94](https://github.com/114snehasish/homelab-azure/issues/94) read-only Azure identity (flex, after track record).
+
+Deliberately deferred to month 3: the event-driven ops responder (agent auto-fixing E11.2 drift issues and triaging Dependabot PRs) — it becomes a one-workflow addition once the agent has earned trust.
 
 ## Working agreement
 
