@@ -47,7 +47,7 @@ Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner
 | [#25](https://github.com/114snehasish/homelab-azure/issues/25) | E12 Docs, architecture & ADRs | governance | 4 + rolling | Core (trimmed) |
 | [#26](https://github.com/114snehasish/homelab-azure/issues/26) | E13 AKS pilot | apps/platform | stretch | Stretch |
 | [#88](https://github.com/114snehasish/homelab-azure/issues/88) | E14 Ephemeral Claude Code agent runners on k3s | apps/platform | month 2 | Month-2 opener |
-| E15 *(issues pending)* | E15 Persistent storage layer v2 + park/resume lifecycle | resilience/platform | 1–2 | **Core — exempt from the cut order** |
+| [#96](https://github.com/114snehasish/homelab-azure/issues/96) | E15 Persistent storage layer v2 + park/resume lifecycle | resilience/platform | 1–2 | **Core — exempt from the cut order** |
 
 ## Dependency graph
 
@@ -69,7 +69,7 @@ graph LR
   E09 --> E14[#88 Agent runners]
   E05 --> E14
   E08 --> E14
-  E01 --> E15[E15 Persistence v2 + park/resume]
+  E01 --> E15[#96 Persistence v2 + park/resume]
   E15 --> E03
   E15 --> E07
   E10[#23 Cost governance]
@@ -117,7 +117,7 @@ Full scope is **13 epics / 60 PRs ≈ 90–120 hours** — more than a typical s
 5. Shrink E04 to it-tools only
 6. Slide E09.4/E09.5 to month 2 — *k3s installed + Argo CD syncing is a fine month-1 exit state*
 
-## E15 — Persistent storage layer v2 + park/resume lifecycle (weeks 1–2, added 2026-07-05)
+## E15 — Persistent storage layer v2 + park/resume lifecycle ([#96](https://github.com/114snehasish/homelab-azure/issues/96), weeks 1–2, added 2026-07-05)
 
 The epic that encodes the lab's philosophy. The current pet-disk solution (raw cloud-init bash, LUN discovery, format-if-unformatted as the only guard, disk sharing an RG with disposable resources, no logical backups, no k8s volume story) is replaced by a **tiered persistence architecture**:
 
@@ -127,7 +127,7 @@ The epic that encodes the lab's philosophy. The current pet-disk solution (raw c
 
 **Lifecycle workflows**: `park.yml` (dispatch-gated: final backup → verify → destroy `compute/vm` → cost summary) and `resume.yml` (apply → mount-guard check → app health check). The drill child proves a full park→resume cycle with data and certs intact and records the measured resume time and parked cost.
 
-Children (one PR each; GitHub issues pending — see epic once filed): **E15.1** ADR-0009 tiered persistence · **E15.2** persist RG + snapshot-swap disk migration + backup storage account (**R12** — the one dangerous op, done while the disk is near-empty) · **E15.3** mount contract v2 (VM recreate) · **E15.4** restic-to-blob service (repo password: GitHub secret interim → Key Vault after E05; **R13**) · **E15.5** park/resume workflows · **E15.6** full lifecycle drill + runbook · **E15.7** local-path-provisioner StorageClass (lands with E09).
+Children (one PR each): **E15.1** [#97](https://github.com/114snehasish/homelab-azure/issues/97) ADR-0009 tiered persistence · **E15.2** [#98](https://github.com/114snehasish/homelab-azure/issues/98) persist RG + snapshot-swap disk migration + backup storage account (**R12** — the one dangerous op, done while the disk is near-empty) · **E15.3** [#99](https://github.com/114snehasish/homelab-azure/issues/99) mount contract v2 (VM recreate) · **E15.4** [#100](https://github.com/114snehasish/homelab-azure/issues/100) restic-to-blob service (repo password: GitHub secret interim → Key Vault after E05; **R13**) · **E15.5** [#101](https://github.com/114snehasish/homelab-azure/issues/101) park/resume workflows · **E15.6** [#102](https://github.com/114snehasish/homelab-azure/issues/102) full lifecycle drill + runbook · **E15.7** [#103](https://github.com/114snehasish/homelab-azure/issues/103) local-path-provisioner StorageClass (lands with E09).
 
 Interaction with E07: E07 narrows to the **crash-consistent disaster layer** (Backup vault, protect-disk, vault-restore drill, pre-op snapshots); its app-consistent SQLite child (#60) is superseded by E15.4.
 
