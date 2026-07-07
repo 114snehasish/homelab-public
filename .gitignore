@@ -5,3 +5,7 @@ keys/
 *.tfstate
 *.tfstate.*
 .terraform/
+.idea/
+*.tfplan
+tfplan
+crash.log
