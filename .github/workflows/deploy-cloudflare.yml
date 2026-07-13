@@ -10,7 +10,7 @@ on:
       apply:
         description: 'Applying the changes'
         type: boolean
-        default: true
+        default: false
   workflow_call:
     inputs:
       apply:
@@ -49,5 +49,5 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name != 'push' && inputs.apply == true)
+        if: inputs.apply == true
         run: terraform apply -auto-approve tfplan
