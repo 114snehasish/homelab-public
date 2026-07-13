@@ -36,7 +36,7 @@ Design is "cattle VM, pet disk": destroying/recreating `compute/vm` is routine; 
 - cloud-init contract (`compute/vm/cloud-init.yaml`): discovers the data disk at `/dev/disk/azure/scsi1/lun10`, mounts at `/data`. Changing the LUN in Terraform breaks it.
 - The NS record name `az` in `infra/cloudflare/main.tf` is hardcoded and must match the subdomain label of `dns_zone_name`.
 - GitHub secrets are split: network/storage/compute workflows use `ARM_*` secret names; dns/cloudflare use `AZURE_*` (plus `DNS_ZONE_NAME`, `RESOURCE_GROUP_NAME`, `CLOUDFLARE_*`). Both sets must exist. Known inconsistency — don't standardize without asking.
-- Apply gates differ: network/storage/compute apply only via manual `workflow_dispatch` with the apply checkbox; dns/cloudflare auto-apply on push to `main` (their manual dispatch has an apply checkbox, default checked). Also a known, undecided inconsistency — don't silently "fix" it.
+- Apply gate is uniform (resolved by #28): all five module workflows run plan on push/PR and apply only via manual `workflow_dispatch` with the apply checkbox (default unchecked). No workflow auto-applies on push.
 - `main` is force-mirrored to a public GitHub repo on every push (`mirror.yml`) — treat everything committed as public; never commit tfvars, keys, or `.env`.
 - `docs/technical_reference.md` predates the dns/cloudflare modules — update `docs/` when adding or changing modules.
 
