@@ -37,6 +37,9 @@ Design is "cattle VM, pet disk": destroying/recreating `compute/vm` is routine; 
 - The NS record name `az` in `infra/cloudflare/main.tf` is hardcoded and must match the subdomain label of `dns_zone_name`.
 - GitHub secrets are split: network/storage/compute workflows use `ARM_*` secret names; dns/cloudflare use `AZURE_*` (plus `DNS_ZONE_NAME`, `RESOURCE_GROUP_NAME`, `CLOUDFLARE_*`). Both sets must exist. Known inconsistency — don't standardize without asking.
 - Apply gate is uniform (resolved by #28): all five module workflows run plan on push/PR and apply only via manual `workflow_dispatch` with the apply checkbox (default unchecked). No workflow auto-applies on push.
+- `deploy.yml` is the overall pipeline: it calls the five `deploy-*.yml` workflows as reusable workflows (`workflow_call`, `secrets: inherit`) in dependency order. Its `apply_terraform` checkbox gates apply in every module job — unchecked = plan-only dry run across all five.
+- `destroy.yml` tears down `compute/vm` → `infra/cloudflare` → `infra/dns` only. It deliberately skips `infra/storage` (the pet disk) **and** `infra/network`: the disk lives inside `homelab-rg`, so destroying the network module would delete (or fail on) the RG holding the disk. VNet/subnet/NSG/RG stay up — they cost nothing. `apply_destroy` unchecked = dry run.
+- Deploy and destroy share `concurrency: homelab-terraform` so they can't interleave.
 - `main` is force-mirrored to a public GitHub repo on every push (`mirror.yml`) — treat everything committed as public; never commit tfvars, keys, or `.env`.
 - `docs/technical_reference.md` predates the dns/cloudflare modules — update `docs/` when adding or changing modules.
 

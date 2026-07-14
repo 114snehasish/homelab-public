@@ -1,0 +1,62 @@
+name: Deploy Homelab Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_source_ip:
+        description: 'The IP address to whitelist for SSH access (e.g., 1.2.3.4/32). Leave empty to use the runner IP (not recommended as it changes).'
+        required: false
+        type: string
+      apply_terraform:
+        description: 'Whether to apply the changes. Uncheck for a dry run (plan only).'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: homelab-terraform
+
+jobs:
+  network:
+    name: Network
+    uses: ./.github/workflows/deploy-network.yml
+    secrets: inherit
+    with:
+      ssh_source_ip: ${{ inputs.ssh_source_ip }}
+      apply: ${{ inputs.apply_terraform }}
+
+  dns:
+    name: DNS
+    needs: network
+    uses: ./.github/workflows/deploy-dns.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply_terraform }}
+
+  cloudflare:
+    name: Cloudflare
+    needs: dns
+    uses: ./.github/workflows/deploy-cloudflare.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply_terraform }}
+
+  storage:
+    name: Storage
+    needs: cloudflare
+    uses: ./.github/workflows/deploy-storage.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply_terraform }}
+
+  compute:
+    name: Compute
+    needs: storage
+    uses: ./.github/workflows/deploy-compute.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply_terraform }}
