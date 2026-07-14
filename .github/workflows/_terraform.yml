@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ARM_* auth is set entirely via $GITHUB_ENV, not a static env:
       # entry, so there's exactly one unambiguous source per run instead
