@@ -30,12 +30,45 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      # Serves compute/vm's dns_zone_name/dns_rg_name (self-registered DNS
+      # A-record); infra/dns's own dns_zone_name variable happens to share
+      # the first name too. Do not remove.
       TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
       TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
+      # infra/cloudflare-only variable names; safe as static env since they
+      # don't collide with any variable declared by another module.
+      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_azure_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
+      TF_VAR_azure_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # infra/dns and infra/cloudflare authenticate with the AZURE_*
+      # secrets, not ARM_* (retiring that split is tracked separately,
+      # E02.4). A static env: entry can't be conditionally unset per
+      # caller, so this step only runs for those two callers and overrides
+      # the job-level ARM_* values via $GITHUB_ENV for the rest of the
+      # job; network/storage/compute are unaffected since the step is
+      # skipped for them.
+      - name: Use AZURE_* credentials for dns/cloudflare
+        if: inputs.working_directory == 'infra/dns' || inputs.working_directory == 'infra/cloudflare'
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" >> "$GITHUB_ENV"
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
+
+      # infra/dns's rg_name variable collides by name with the rg_name
+      # variable declared (same "homelab-rg" default) by infra/network,
+      # infra/storage, and compute/vm. A static env: entry would silently
+      # override those three modules' defaults too, so this is scoped to
+      # infra/dns only, same pattern as above.
+      - name: Set rg_name for infra/dns
+        if: inputs.working_directory == 'infra/dns'
+        run: echo "TF_VAR_rg_name=${{ secrets.RESOURCE_GROUP_NAME }}" >> "$GITHUB_ENV"
 
       - name: Read pinned Terraform version
         id: tfversion

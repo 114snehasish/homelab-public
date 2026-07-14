@@ -72,16 +72,28 @@ Each module has its own workflow, runnable standalone (push with path filter, or
 - **`deploy-storage.yml`**: Provisions the vaults.
 - **`deploy-compute.yml`**: Launches the nodes.
 
-`deploy-network.yml`, `deploy-storage.yml`, and `deploy-compute.yml` are thin
-wrappers: their `jobs:` block only declares triggers/inputs, then delegates
-the actual init → validate → plan → dispatch-gated apply sequence to
-**`_terraform.yml`**, a `workflow_call`-only reusable workflow parameterized
-by `working_directory` (module path), `apply`, and an optional
-`ssh_source_ip` (network only). `_terraform.yml` pins the Terraform CLI
-version from the repo-root `.terraform-version` file and runs its job under
-a `tf-<working_directory>` concurrency group, so two runs touching the same
-module's state queue instead of racing. `deploy-dns.yml`/`deploy-cloudflare.yml`
-still inline their own steps pending the same migration (tracked separately).
+All five workflows — `deploy-network.yml`, `deploy-dns.yml`,
+`deploy-cloudflare.yml`, `deploy-storage.yml`, and `deploy-compute.yml` —
+are thin wrappers: their `jobs:` block only declares triggers/inputs, then
+delegates the actual init → validate → plan → dispatch-gated apply sequence
+to **`_terraform.yml`**, a `workflow_call`-only reusable workflow
+parameterized by `working_directory` (module path), `apply`, and an
+optional `ssh_source_ip` (network only). `_terraform.yml` pins the
+Terraform CLI version from the repo-root `.terraform-version` file and
+runs its job under a `tf-<working_directory>` concurrency group, so two
+runs touching the same module's state queue instead of racing.
+
+Two per-module quirks are handled inside `_terraform.yml` with conditional
+steps keyed on `inputs.working_directory`, rather than the shared
+job-level `env:` block, since a static `env:` entry can't be scoped to one
+caller without leaking to the others:
+- `infra/dns` and `infra/cloudflare` authenticate with the `AZURE_*`
+  secrets rather than `ARM_*` (see CLAUDE.md); retiring that split is
+  tracked separately (E02.4).
+- `infra/dns`'s `rg_name` variable is populated from the
+  `RESOURCE_GROUP_NAME` secret for `infra/dns` only, since `rg_name` is
+  also declared (same default) by `infra/network`, `infra/storage`, and
+  `compute/vm`.
 
 ### Overall pipelines
 
