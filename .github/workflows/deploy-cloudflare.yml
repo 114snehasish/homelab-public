@@ -1,10 +1,6 @@
 name: Deploy Cloudflare
 
 on:
-  push:
-    paths:
-      - 'infra/cloudflare/**'
-      - '.github/workflows/deploy-cloudflare.yml'
   workflow_dispatch:
     inputs:
       apply:
@@ -17,37 +13,16 @@ on:
         required: false
         type: boolean
         default: false
+  push:
+    paths:
+      - 'infra/cloudflare/**'
+      - '.github/workflows/deploy-cloudflare.yml'
 
 jobs:
-  deploy-cloudflare:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infra/cloudflare
-    env:
-      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-      TF_VAR_azure_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
-      TF_VAR_azure_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
-      # Azure credentials needed for data source lookup
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        if: inputs.apply == true
-        run: terraform apply -auto-approve tfplan
+  terraform:
+    name: Terraform Cloudflare
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/cloudflare
+      apply: ${{ inputs.apply == true }}
