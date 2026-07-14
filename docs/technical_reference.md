@@ -117,3 +117,19 @@ drift, until #54 (E06.4) removes the ipify data source.
 - **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**: the disk lives inside `homelab-rg`, so the network module cannot be destroyed while the disk exists, and the remaining VNet/subnet/NSG/RG are free; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only.
 
 Both overall pipelines share the `homelab-terraform` concurrency group so a deploy and a destroy can never run at the same time.
+
+### Lint gate
+
+**`lint.yml`** runs on every push/PR touching any `.tf` file (repo-wide, not per-module — unlike the deploy workflows, static analysis doesn't need Azure credentials or a backend). Two independent jobs:
+- **TFLint**, configured by the repo-root `.tflint.hcl` (`terraform` ruleset preset + `azurerm` ruleset), run with `--recursive` so one invocation covers all five root modules.
+- **Checkov**, `bridgecrewio/checkov-action`, `-d . --framework terraform`, scanning the whole tree in one pass.
+
+Both are blocking (`soft_fail: false`). The baseline (E01.6) was triaged rather than left soft-failing: real findings were fixed (missing `required_version`, an unconstrained `http` provider, two dead variables, a missing `allow_extension_operations = false`), and the three checkov findings that need infra this repo doesn't have yet — customer-managed disk encryption (needs Key Vault, E05) and no public IP on the VM NIC (needs Tailscale first, E06) — or don't apply to this architecture (disk export/Private Link) carry inline `# checkov:skip=<ID>:<reason>` comments next to the resource.
+
+### Dependency updates
+
+**`dependabot.yml`** watches `github-actions` (root) weekly, plus one `terraform` entry per root module (Dependabot doesn't recurse into subdirectories on its own) — also weekly.
+
+### Repo hygiene
+
+`.github/ISSUE_TEMPLATE/epic.md` and `child.md` mirror the roadmap's existing issue-body format (see `docs/roadmap.md`'s epic table and "Working agreement"). `.github/pull_request_template.md` encodes the roadmap's PR checklist. `.github/CODEOWNERS` (`* @114snehasish`) covers the whole repo.

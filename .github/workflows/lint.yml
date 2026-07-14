@@ -1,0 +1,51 @@
+name: Lint
+
+on:
+  push:
+    paths:
+      - '**/*.tf'
+      - '.tflint.hcl'
+      - '.github/workflows/lint.yml'
+  pull_request:
+    paths:
+      - '**/*.tf'
+      - '.tflint.hcl'
+      - '.github/workflows/lint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tflint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Init TFLint Plugins
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run TFLint
+        run: tflint --recursive --config="$(pwd)/.tflint.hcl"
+
+  checkov:
+    name: Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Baseline triaged in E01.6: real findings fixed, the rest carry
+      # justified inline `# checkov:skip=` comments — blocking from the start.
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: false

@@ -3,11 +3,6 @@ variable "rg_name" {
   default = "homelab-rg"
 }
 
-variable "location" {
-  type    = string
-  default = "southindia"
-}
-
 variable "vnet_name" {
   type    = string
   default = "homelab-vnet"
