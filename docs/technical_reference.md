@@ -72,6 +72,17 @@ Each module has its own workflow, runnable standalone (push with path filter, or
 - **`deploy-storage.yml`**: Provisions the vaults.
 - **`deploy-compute.yml`**: Launches the nodes.
 
+`deploy-network.yml`, `deploy-storage.yml`, and `deploy-compute.yml` are thin
+wrappers: their `jobs:` block only declares triggers/inputs, then delegates
+the actual init → validate → plan → dispatch-gated apply sequence to
+**`_terraform.yml`**, a `workflow_call`-only reusable workflow parameterized
+by `working_directory` (module path), `apply`, and an optional
+`ssh_source_ip` (network only). `_terraform.yml` pins the Terraform CLI
+version from the repo-root `.terraform-version` file and runs its job under
+a `tf-<working_directory>` concurrency group, so two runs touching the same
+module's state queue instead of racing. `deploy-dns.yml`/`deploy-cloudflare.yml`
+still inline their own steps pending the same migration (tracked separately).
+
 ### Overall pipelines
 
 - **`deploy.yml`** (manual dispatch): calls the five per-module workflows in dependency order — network → dns → cloudflare → storage → compute — with `secrets: inherit`. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.
