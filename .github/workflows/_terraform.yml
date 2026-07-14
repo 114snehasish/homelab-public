@@ -100,21 +100,18 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
+        id: plan
         working-directory: ${{ inputs.working_directory }}
         run: |
+          set -o pipefail
           if [ -n "${{ inputs.ssh_source_ip }}" ]; then
-            terraform plan -var="ssh_source_ip=${{ inputs.ssh_source_ip }}" -out=tfplan
+            terraform plan -no-color -var="ssh_source_ip=${{ inputs.ssh_source_ip }}" -out=tfplan 2>&1 | tee plan_output.txt
           else
-            terraform plan -out=tfplan
+            terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
           fi
 
-      - name: Terraform Show (plan text)
-        if: github.event_name == 'pull_request'
-        working-directory: ${{ inputs.working_directory }}
-        run: terraform show -no-color tfplan > tfplan.txt
-
       - name: Comment plan on PR
-        if: github.event_name == 'pull_request'
+        if: steps.plan.outcome != 'skipped' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -123,8 +120,9 @@ jobs:
 
             const workingDir = '${{ inputs.working_directory }}';
             const marker = `<!-- tf-plan: ${workingDir} -->`;
+            const planFailed = '${{ steps.plan.outcome }}' !== 'success';
 
-            let planText = fs.readFileSync(path.join(workingDir, 'tfplan.txt'), 'utf8');
+            let planText = fs.readFileSync(path.join(workingDir, 'plan_output.txt'), 'utf8');
             const maxLen = 60000;
             let truncated = false;
             if (planText.length > maxLen) {
@@ -146,9 +144,10 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const body = [
-              `#### Terraform Plan — \`${workingDir}\``,
+              `#### Terraform Plan — \`${workingDir}\`` + (planFailed ? ' — plan failed' : ''),
               marker,
               noise,
+              planFailed ? '\n**Plan failed** — see the output below.\n' : '',
               '<details><summary>Show plan</summary>',
               '',
               '```diff',
