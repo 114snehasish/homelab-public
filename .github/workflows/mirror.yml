@@ -11,19 +11,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # No persisted GITHUB_TOKEN header: the public mirror is also on
+          # github.com, so a persisted http.<origin>.extraheader would override
+          # the PAT below and 403 the force-push. (checkout v6+ also moved that
+          # header into a $RUNNER_TEMP include file, breaking the old
+          # `git config --unset-all` cleanup with exit 5 — see #131.)
+          persist-credentials: false
 
       - name: Push to public repo
         run: |
           # Strip 'https://' from the URL to insert credentials
           TARGET_URL="${PUBLIC_REPO_URL#https://}"
-          
-          # Unset the header that actions/checkout adds to prevent conflict with the PAT
-          git config --unset-all http.https://github.com/.extraheader
-          
+
           # Add remote with authentication
           # Using oauth2 as the username for PAT
           git remote add public "https://oauth2:${PUBLIC_REPO_TOKEN}@${TARGET_URL}"
-          
+
           # Push to the public remote
           git push public main --force
         env:
