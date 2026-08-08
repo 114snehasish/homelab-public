@@ -44,7 +44,7 @@ jobs:
       # Baseline triaged in E01.6: real findings fixed, the rest carry
       # justified inline `# checkov:skip=` comments — blocking from the start.
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@v12.3114.0
+        uses: bridgecrewio/checkov-action@v12.3115.0
         with:
           directory: .
           framework: terraform
