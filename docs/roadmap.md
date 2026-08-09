@@ -110,6 +110,7 @@ Sequencing rules that are **not optional**:
 | R14 | GCS state bucket lives inside the (existing, destroyable) GCP project | Bucket versioning ON, created out-of-band, never-touch discipline (#107); accepted residual risk |
 | R15 | GCP credit exhaustion/expiry mid-cycle | Billing budget alarm at the credit ceiling (#107); parkability is the backstop |
 | R16 | GCP zonal disk vs VM zone mismatch (attach failure) | One shared `zone` variable across `gcp/storage` and `gcp/vm` (#111/#112) |
+| R17 | Provider bumps merge unverified — Dependabot runs get no secrets, so every `Deploy *` check dies at `terraform init` and the bump itself is never plan-tested | [#138](https://github.com/114snehasish/homelab/issues/138) (E01.8) mirrors the secrets into the Dependabot store; interim workaround is a maintainer push to the PR branch, which re-runs CI with real secrets (used for the azurerm 4→5 bumps #143–#147) |
 
 ## Capacity honesty & cut order
 

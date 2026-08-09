@@ -140,11 +140,13 @@ before validate or plan ever runs; only TFLint/Checkov produce real
 signal on such a PR. A maintainer push to the PR branch (an empty commit
 is fine) re-triggers CI as that maintainer, restoring repository secrets
 and producing the real plan comment — this is how the azurerm 4→5 PRs
-(#143–#147) were driven to a meaningful CI result. Mirroring the secrets
-into Settings → Secrets and variables → Dependabot would let init/plan
-run, but is not sufficient for a green check on its own: Dependabot runs
-also get a read-only `GITHUB_TOKEN`, so the sticky plan-comment step
-would still fail with a 403.
+(#143–#147) were driven to a meaningful CI result. The standing fix is to
+mirror the secrets into Settings → Secrets and variables → Dependabot
+(#138, roadmap R17). Expect that to fix init/plan but not necessarily to
+turn the check green on its own: Dependabot runs also get a read-only
+`GITHUB_TOKEN`, so the sticky plan-comment step is expected to 403. That
+remains unverified — the comment step is skipped whenever plan is
+skipped, so it has never actually executed on a Dependabot PR.
 
 ### Repo hygiene
 
