@@ -130,6 +130,22 @@ Both are blocking (`soft_fail: false`). The baseline (E01.6) was triaged rather 
 
 **`dependabot.yml`** watches `github-actions` (root) weekly, plus one `terraform` entry per root module (Dependabot doesn't recurse into subdirectories on its own) — also weekly.
 
+Dependabot-authored PRs carry a sharp edge: workflow runs triggered by
+`dependabot[bot]` (the `pull_request` run and the branch-push run alike)
+read **Dependabot secrets** — a separate store from Actions secrets, and
+none are configured there. Every `ARM_*`/`AZURE_*`/`CLOUDFLARE_*`/
+`DNS_ZONE_NAME`/`RESOURCE_GROUP_NAME` reference resolves to an empty
+string, so the Terraform job dies at `terraform init` (backend auth)
+before validate or plan ever runs; only TFLint/Checkov produce real
+signal on such a PR. A maintainer push to the PR branch (an empty commit
+is fine) re-triggers CI as that maintainer, restoring repository secrets
+and producing the real plan comment — this is how the azurerm 4→5 PRs
+(#143–#147) were driven to a meaningful CI result. Mirroring the secrets
+into Settings → Secrets and variables → Dependabot would let init/plan
+run, but is not sufficient for a green check on its own: Dependabot runs
+also get a read-only `GITHUB_TOKEN`, so the sticky plan-comment step
+would still fail with a 403.
+
 ### Repo hygiene
 
 `.github/ISSUE_TEMPLATE/epic.md` and `child.md` mirror the roadmap's existing issue-body format (see `docs/roadmap.md`'s epic table and "Working agreement"). `.github/pull_request_template.md` encodes the roadmap's PR checklist. `.github/CODEOWNERS` (`* @114snehasish`) covers the whole repo.
