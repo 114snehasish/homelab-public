@@ -26,6 +26,10 @@ I have put comprehensive documentation under the `docs/` directory to help you u
 - **[⚙️ Technical Reference](docs/technical_reference.md)**  
   My personal API reference for the current core modules.
 
+- **[🔑 OIDC Bootstrap Runbook](docs/oidc_bootstrap.md)**  
+  The one module I apply by hand: the managed identity my pipelines authenticate as, so no
+  Azure password ever lives in GitHub.
+
 ## 🚀 Quick Start (The Base Layer)
 
 ### Prerequisites
@@ -37,6 +41,17 @@ I have put comprehensive documentation under the `docs/` directory to help you u
 To lay this foundation, I deploy the modules in this specific dependency order:
 
 **Note:** Ensure you have set the required secrets in GitHub and created `terraform.tfvars` locally (copy from `.example`).
+
+0.  **Identity** (`infra/identity`) — *one-time bootstrap, local only*
+    The managed identity my CI federates into for keyless OIDC auth. It cannot deploy itself
+    through Actions (the credential it would need is the thing it creates), so I apply it by
+    hand, once, and never from CI. Full procedure in the
+    **[🔑 OIDC Bootstrap Runbook](docs/oidc_bootstrap.md)**.
+    ```bash
+    cd infra/identity
+    terraform init
+    terraform apply
+    ```
 
 1.  **Network** (`infra/network`)  
     Establishing the perimeter and address space.
