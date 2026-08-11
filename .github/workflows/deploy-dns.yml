@@ -25,6 +25,9 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # _terraform.yml declares id-token: write for its OIDC path; a caller
+  # granting less than the workflow it calls fails the run at startup.
+  id-token: write
 
 jobs:
   terraform:

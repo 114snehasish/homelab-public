@@ -23,8 +23,13 @@ on:
       - '.github/workflows/oidc-smoke.yml'
       - '.github/workflows/_terraform.yml'
 
+# A called workflow cannot request more than its caller grants, so every caller
+# of _terraform.yml has to cover everything _terraform.yml declares — including
+# the pull-requests: write it needs for sticky plan comments, even though smoke
+# runs skip that step. Get this wrong and the run dies at startup with no jobs.
 permissions:
   contents: read
+  pull-requests: write
   id-token: write
 
 # Deliberately not chained with `needs:`. deploy.yml orders the modules because
