@@ -13,6 +13,7 @@ As I expand the lab, new modules will be added, but these core components provid
 ├── compute
 │   └── vm          # [Ephemeral] The Workload Node
 ├── infra
+│   ├── identity    # [Control plane] CI's Azure identity (bootstrapped locally)
 │   ├── network     # [Persistent] The Network Backbone
 │   └── storage     # [Persistent] The Data Layer
 ├── .github
@@ -61,7 +62,45 @@ The bootstrapping script is designed to:
 
 ---
 
-## 5. CI/CD Workflows
+## 5. Control-Plane Module: `infra/identity`
+
+**Purpose**: Holds the Azure identity that GitHub Actions federates into, replacing the
+long-lived service-principal secret with keyless OIDC (epic #15). Unlike every other module,
+this one is **applied locally, once** — it cannot deploy itself through CI, because the
+credential CI would need is the thing it creates. See the
+**[🔑 OIDC Bootstrap Runbook](oidc_bootstrap.md)** for the procedure.
+
+### Resources
+- `azurerm_resource_group.homelab_identity_rg` (`homelab-identity-rg`): a dedicated RG, *not*
+  `homelab-rg` — E02.2 (#34) grants this identity Contributor over `homelab-rg`, and an
+  identity able to delete itself could lock CI out of Azure.
+- `azurerm_user_assigned_identity.homelab_github_oidc` (`homelab-github-actions-identity`):
+  protected by `prevent_destroy = true`, since recreating it mints a new `client_id` and
+  invalidates both the role assignments and the repo variables that depend on it.
+- `azurerm_federated_identity_credential.homelab_github_main` — subject
+  `repo:114snehasish/homelab:ref:refs/heads/main` (covers dispatch-gated applies, which are
+  always dispatched from `main`).
+- `azurerm_federated_identity_credential.homelab_github_pull_request` — subject
+  `repo:114snehasish/homelab:pull_request`.
+
+Both credentials use issuer `https://token.actions.githubusercontent.com` and audience
+`api://AzureADTokenExchange`.
+
+### Outputs
+`client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`. None are secrets —
+they are identifiers, which is why E02.3 (#35) moves them into repo **variables** rather than
+repo secrets. `principal_id` is E02.2's role-assignment target.
+
+### Current state: deliberately inert
+As of E02.1 the identity carries **no role assignments at all**. GitHub can prove who it is to
+Azure and Azure grants it nothing, which is what makes this a safe, reversible checkpoint
+(roadmap risk **R8**). No workflow authenticates with it yet, and there is no
+`deploy-identity.yml`; the module's `.tf` files are still covered by the repo-wide `lint.yml`
+gate.
+
+---
+
+## 6. CI/CD Workflows
 
 ### Per-module pipelines
 

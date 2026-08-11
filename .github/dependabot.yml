@@ -6,6 +6,11 @@ updates:
       interval: "weekly"
 
   - package-ecosystem: "terraform"
+    directory: "/infra/identity"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "terraform"
     directory: "/infra/network"
     schedule:
       interval: "weekly"
