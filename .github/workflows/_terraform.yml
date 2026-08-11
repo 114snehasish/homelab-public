@@ -35,7 +35,16 @@ jobs:
     name: Terraform
     runs-on: ubuntu-latest
     concurrency:
-      group: tf-${{ inputs.working_directory }}
+      # Smoke runs get their own group. Sharing tf-<dir> with the deploy
+      # workflows meant that any PR touching both — this one — left the smoke
+      # jobs as the superseded pending entry in each group, and GitHub keeps
+      # only one pending run per group: they were cancelled a second after
+      # starting, silently and with no output to explain it.
+      #
+      # The cost of splitting is that a smoke plan can now overlap an apply of
+      # the same module and lose the state lock. That failure is loud, named,
+      # and re-runnable, which the cancellation was not.
+      group: tf-${{ inputs.working_directory }}${{ inputs.use_oidc && '-oidc-smoke' || '' }}
       cancel-in-progress: false
     env:
       # Serves compute/vm's dns_zone_name/dns_rg_name (self-registered DNS
