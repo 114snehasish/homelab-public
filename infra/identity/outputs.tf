@@ -25,3 +25,15 @@ output "identity_rg_name" {
   description = "Resource group the identity lives in"
   value       = azurerm_resource_group.homelab_identity_rg.name
 }
+
+# The complete list of what CI is allowed to do, in one greppable place —
+# diff it against `az role assignment list --assignee <principal_id> --all`
+# to prove nothing was granted out of band.
+output "granted_scopes" {
+  description = "Role assignments held by the identity, as role name => scope"
+  value = {
+    (azurerm_role_assignment.homelab_rg_contributor.role_definition_name)   = azurerm_role_assignment.homelab_rg_contributor.scope
+    (azurerm_role_assignment.tfstate_blob_contributor.role_definition_name) = azurerm_role_assignment.tfstate_blob_contributor.scope
+    (azurerm_role_assignment.vm_ssh_key_reader.role_definition_name)        = azurerm_role_assignment.vm_ssh_key_reader.scope
+  }
+}

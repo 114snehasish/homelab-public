@@ -86,17 +86,39 @@ credential CI would need is the thing it creates. See the
 Both credentials use issuer `https://token.actions.githubusercontent.com` and audience
 `api://AzureADTokenExchange`.
 
-### Outputs
-`client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`. None are secrets —
-they are identifiers, which is why E02.3 (#35) moves them into repo **variables** rather than
-repo secrets. `principal_id` is E02.2's role-assignment target.
+### Role assignments (E02.2, #34)
+Three `azurerm_role_assignment`s, each scoped as narrowly as the thing it enables:
 
-### Current state: deliberately inert
-As of E02.1 the identity carries **no role assignments at all**. GitHub can prove who it is to
-Azure and Azure grants it nothing, which is what makes this a safe, reversible checkpoint
-(roadmap risk **R8**). No workflow authenticates with it yet, and there is no
-`deploy-identity.yml`; the module's `.tf` files are still covered by the repo-wide `lint.yml`
-gate.
+| Role | Scope | Enables |
+|---|---|---|
+| `Contributor` | RG `homelab-rg` | Every resource the five modules deploy. |
+| `Storage Blob Data Contributor` | the `tfstate` container in `listeninfratfstatesa` | State read/write plus the blob lease Terraform uses as its lock. |
+| `Reader` | the `homelab-vm-ssh-key-2` resource in `do-not-delete` | `compute/vm`'s SSH-key data source — one resource, not the RG around it. |
+
+The scopes are located by read-only data sources; nothing outside `homelab-identity-rg` is ever
+managed by this module. Two grants are deliberately absent: anything at subscription scope, and
+any role on the *storage account* (which would carry `listKeys`, a bearer credential for every
+container in it — the exact credential class E02 exists to eliminate).
+
+Because a role assignment lives on the scope it grants, CI can manage `homelab-rg` but could
+never recreate it after a deletion. That is why `destroy.yml` stops short of `infra/network`,
+and why the break-glass local apply matters (roadmap risk **R8**).
+
+The blob grant only works when Terraform authenticates to storage with Entra rather than
+account keys — `ARM_USE_AZUREAD=true`, set alongside `ARM_USE_OIDC=true` in `_terraform.yml`'s
+OIDC credential step. Without it, `terraform init` fails at `listKeys` before validate runs.
+
+### Outputs
+`client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`, `granted_scopes`. None
+are secrets — they are identifiers, which is why E02.3 (#35) moves them into repo **variables**
+rather than repo secrets. `granted_scopes` is the audit surface: diff it against
+`az role assignment list --assignee <principal_id> --all`.
+
+### Current state
+The identity has its permissions but no production traffic: no `deploy-*.yml` authenticates as
+it yet — that is #35. The one workflow that does is **`oidc-smoke.yml`**, plan-only, which
+plans all five modules as the UAMI and asserts that out-of-scope reads fail. There is still no
+`deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide `lint.yml` gate.
 
 ---
 

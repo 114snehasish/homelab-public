@@ -17,10 +17,18 @@ on:
         required: false
         type: string
         default: ''
+      use_oidc:
+        description: 'Authenticate as the federated UAMI instead of the client-secret SPs (E02.2 smoke test; becomes the default in E02.3/#35)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   pull-requests: write
+  # Real as of E02.2 — oidc-smoke.yml calls this workflow with use_oidc: true
+  # and the job needs to mint an OIDC token to exchange for an Azure one.
+  id-token: write
 
 jobs:
   terraform:
@@ -50,8 +58,26 @@ jobs:
       # entry, so there's exactly one unambiguous source per run instead
       # of a static value that a later override could silently lose to.
       # network/storage/compute use the ARM_* secrets.
+      # E02.2 (#34): the keyless path, exercised today only by oidc-smoke.yml.
+      # ARM_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID come from repo *variables* —
+      # they are identifiers, not credentials (infra/identity/outputs.tf).
+      #
+      # ARM_USE_AZUREAD is load-bearing, not cosmetic: without it the azurerm
+      # backend authenticates to blob storage by calling listKeys on the state
+      # storage account, and the UAMI deliberately holds no rights over that
+      # account — only Storage Blob Data Contributor on the tfstate container.
+      # Omit it and `terraform init` fails before validate ever runs.
+      - name: Use OIDC federated credentials
+        if: inputs.use_oidc == true
+        run: |
+          echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
+          echo "ARM_USE_AZUREAD=true" >> "$GITHUB_ENV"
+          echo "ARM_CLIENT_ID=${{ vars.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_SUBSCRIPTION_ID=${{ vars.ARM_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_TENANT_ID=${{ vars.ARM_TENANT_ID }}" >> "$GITHUB_ENV"
+
       - name: Use ARM_* credentials
-        if: inputs.working_directory != 'infra/dns' && inputs.working_directory != 'infra/cloudflare'
+        if: inputs.use_oidc != true && inputs.working_directory != 'infra/dns' && inputs.working_directory != 'infra/cloudflare'
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
           echo "ARM_CLIENT_SECRET=${{ secrets.ARM_CLIENT_SECRET }}" >> "$GITHUB_ENV"
@@ -62,7 +88,7 @@ jobs:
       # secrets instead (retiring that split is tracked separately,
       # E02.4).
       - name: Use AZURE_* credentials for dns/cloudflare
-        if: inputs.working_directory == 'infra/dns' || inputs.working_directory == 'infra/cloudflare'
+        if: inputs.use_oidc != true && (inputs.working_directory == 'infra/dns' || inputs.working_directory == 'infra/cloudflare')
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
           echo "ARM_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" >> "$GITHUB_ENV"
@@ -110,8 +136,14 @@ jobs:
             terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
           fi
 
+      # Skipped for smoke runs: oidc-smoke.yml plans the same five modules a
+      # PR's own deploy-*.yml runs already plan, and both would write the same
+      # sticky `tf-plan: <dir>` comment and clobber each other. What the smoke
+      # run is asserting is auth, not the diff — pass/fail is the whole signal.
+      # E02.3 (#35): when OIDC becomes the only auth path, drop the use_oidc
+      # clause here or PR plan comments stop appearing entirely.
       - name: Comment plan on PR
-        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request'"
+        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request' && inputs.use_oidc != true"
         uses: actions/github-script@v9
         with:
           script: |
