@@ -10,10 +10,16 @@ name: Destroy Homelab Infrastructure
 # breaks infra/cloudflare's and compute/vm's data-source lookups by name
 # between deploy cycles (#124).
 #
-# Unlike every other Terraform workflow here, this one hand-rolls its jobs
-# instead of calling _terraform.yml, so it duplicates auth and pins no Terraform
-# version. #153 tracks migrating it; until then, changes to the shared path have
-# to be mirrored here by hand.
+# Both jobs are thin callers of _terraform.yml, same as the deploy-*.yml
+# workflows (#153) — they inherit the .terraform-version pin, `validate`, the
+# OIDC auth step and the per-module `tf-<dir>` concurrency group from there.
+# The only difference from a deploy caller is `destroy: true`, which flips the
+# plan to `-destroy`; the apply gate is the same one.
+#
+# workflow_dispatch runs inherit the ref they were dispatched from, and the
+# only federated credentials are `:ref:refs/heads/main` and `:pull_request`
+# (E02.3, #35) — so dispatch this from main. From a branch it fails at Azure
+# auth, by design.
 
 on:
   workflow_dispatch:
@@ -25,93 +31,34 @@ on:
         default: false
 
 permissions:
-  id-token: write
   contents: read
-  # The deploy-*.yml workflows this calls declare pull-requests: write
-  # (plan comments); a caller must cover everything its callee declares.
   pull-requests: write
+  # _terraform.yml declares id-token: write for its OIDC path; a caller
+  # granting less than the workflow it calls fails the run at startup.
+  id-token: write
 
 concurrency:
+  # Workflow-level, so a destroy and a deploy can never interleave. Each called
+  # job additionally takes _terraform.yml's `tf-<working_directory>` group,
+  # which is what actually leases the module's state blob.
   group: homelab-terraform
 
 jobs:
   destroy-compute:
     name: Destroy Compute
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: compute/vm
-    env:
-      # Keyless, same UAMI the deploy path uses (E02.3, #35). Static env: is
-      # safe here in a way it is not in _terraform.yml — this job has no second
-      # credential source for a later $GITHUB_ENV write to lose to.
-      #
-      # This workflow is workflow_dispatch-only and dispatched from main, so the
-      # `:ref:refs/heads/main` federated credential matches. Dispatching it from
-      # a branch fails at auth, by design.
-      #
-      # ARM_USE_AZUREAD is required for the backend: the UAMI holds no rights on
-      # the state storage *account*, only Storage Blob Data Contributor on the
-      # tfstate container, so listKeys auth would fail `terraform init`.
-      ARM_USE_OIDC: true
-      ARM_USE_AZUREAD: true
-      ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
-      TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
-      TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan (Destroy)
-        run: terraform plan -destroy -out=tfplan
-
-      - name: Terraform Apply (Destroy)
-        if: inputs.apply_destroy == true
-        run: terraform apply -auto-approve tfplan
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: compute/vm
+      destroy: true
+      apply: ${{ inputs.apply_destroy == true }}
 
   destroy-cloudflare:
     name: Destroy Cloudflare
     needs: destroy-compute
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infra/cloudflare
-    env:
-      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-      TF_VAR_azure_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
-      TF_VAR_azure_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
-      # Azure credentials needed for the DNS zone data-source lookup. Identical
-      # to destroy-compute's block above: E02.3 (#35) collapsed the ARM_*
-      # (compute) / AZURE_* (cloudflare) secret split into one identity.
-      ARM_USE_OIDC: true
-      ARM_USE_AZUREAD: true
-      ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan (Destroy)
-        run: terraform plan -destroy -out=tfplan
-
-      - name: Terraform Apply (Destroy)
-        if: inputs.apply_destroy == true
-        run: terraform apply -auto-approve tfplan
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/cloudflare
+      destroy: true
+      apply: ${{ inputs.apply_destroy == true }}

@@ -17,6 +17,15 @@ on:
         required: false
         type: string
         default: ''
+      # Used only by destroy.yml (#153), which is how that workflow stopped
+      # hand-rolling its own jobs. It flips the plan to `-destroy`; the apply
+      # gate below is deliberately shared rather than duplicated, so
+      # `destroy: true` on its own still only ever produces a dry run.
+      destroy:
+        description: 'Plan a destroy instead of a create/update'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -113,16 +122,23 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terraform validate
 
-      - name: Terraform Plan
+      # Built as an argument array so `-destroy` and `-var=ssh_source_ip`
+      # compose independently instead of needing one branch per combination.
+      # The step name carries the mode because this is the only place a
+      # destroy plan is distinguishable at a glance in the run log.
+      - name: Terraform Plan${{ inputs.destroy && ' (Destroy)' || '' }}
         id: plan
         working-directory: ${{ inputs.working_directory }}
         run: |
           set -o pipefail
-          if [ -n "${{ inputs.ssh_source_ip }}" ]; then
-            terraform plan -no-color -var="ssh_source_ip=${{ inputs.ssh_source_ip }}" -out=tfplan 2>&1 | tee plan_output.txt
-          else
-            terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+          args=(-no-color -out=tfplan)
+          if [ "${{ inputs.destroy }}" = "true" ]; then
+            args+=(-destroy)
           fi
+          if [ -n "${{ inputs.ssh_source_ip }}" ]; then
+            args+=(-var="ssh_source_ip=${{ inputs.ssh_source_ip }}")
+          fi
+          terraform plan "${args[@]}" 2>&1 | tee plan_output.txt
 
       # One sticky comment per module, keyed by the `tf-plan: <dir>` marker.
       # There was a suppression input here while oidc-smoke.yml existed, so its
@@ -202,6 +218,11 @@ jobs:
               });
             }
 
+      # Applies whatever plan was saved above, which since #153 may be a
+      # destroy plan (destroy.yml passes `destroy: true` and maps its
+      # `apply_destroy` checkbox onto `apply`). One gate covers both
+      # directions on purpose: a second, destroy-specific gate would be a
+      # second thing to get wrong on the one path that deletes real infra.
       - name: Terraform Apply
         if: inputs.apply == true && github.event_name != 'pull_request'
         working-directory: ${{ inputs.working_directory }}
