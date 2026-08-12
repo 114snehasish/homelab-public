@@ -13,7 +13,13 @@ on:
         required: false
         type: boolean
         default: false
+  # Pinned to main: a push run's OIDC subject is
+  # `repo:114snehasish/homelab:ref:refs/heads/<branch>`, and the only federated
+  # credentials are for `:ref:refs/heads/main` and `:pull_request` (E02.3, #35).
+  # A feature-branch push could only ever fail at Azure auth; the `pull_request`
+  # trigger below is what gives a branch its plan.
   push:
+    branches: [main]
     paths:
       - 'infra/dns/**'
       - '.github/workflows/deploy-dns.yml'

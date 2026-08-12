@@ -9,6 +9,11 @@ name: Destroy Homelab Infrastructure
 # regardless of usage, not worth tearing down every cycle, and destroying it
 # breaks infra/cloudflare's and compute/vm's data-source lookups by name
 # between deploy cycles (#124).
+#
+# Unlike every other Terraform workflow here, this one hand-rolls its jobs
+# instead of calling _terraform.yml, so it duplicates auth and pins no Terraform
+# version. #153 tracks migrating it; until then, changes to the shared path have
+# to be mirrored here by hand.
 
 on:
   workflow_dispatch:
@@ -37,10 +42,22 @@ jobs:
       run:
         working-directory: compute/vm
     env:
-      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      # Keyless, same UAMI the deploy path uses (E02.3, #35). Static env: is
+      # safe here in a way it is not in _terraform.yml — this job has no second
+      # credential source for a later $GITHUB_ENV write to lose to.
+      #
+      # This workflow is workflow_dispatch-only and dispatched from main, so the
+      # `:ref:refs/heads/main` federated credential matches. Dispatching it from
+      # a branch fails at auth, by design.
+      #
+      # ARM_USE_AZUREAD is required for the backend: the UAMI holds no rights on
+      # the state storage *account*, only Storage Blob Data Contributor on the
+      # tfstate container, so listKeys auth would fail `terraform init`.
+      ARM_USE_OIDC: true
+      ARM_USE_AZUREAD: true
+      ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
       TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
       TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
 
@@ -73,11 +90,14 @@ jobs:
       TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       TF_VAR_azure_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
       TF_VAR_azure_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
-      # Azure credentials needed for data source lookup
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      # Azure credentials needed for the DNS zone data-source lookup. Identical
+      # to destroy-compute's block above: E02.3 (#35) collapsed the ARM_*
+      # (compute) / AZURE_* (cloudflare) secret split into one identity.
+      ARM_USE_OIDC: true
+      ARM_USE_AZUREAD: true
+      ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
 
     steps:
       - name: Checkout Code

@@ -1,2 +1,2 @@
-dns_zone_name = "example.com"
-rg_name       = "your homelab"
+dns_zone_name = "az.example.com" # subdomain delegated to Azure DNS
+dns_rg_name   = "homelab-rg"     # RG the DNS zone lives in (created by infra/network)

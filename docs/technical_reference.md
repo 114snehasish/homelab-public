@@ -115,10 +115,19 @@ rather than repo secrets. `granted_scopes` is the audit surface: diff it against
 `az role assignment list --assignee <principal_id> --all`.
 
 ### Current state
-The identity has its permissions but no production traffic: no `deploy-*.yml` authenticates as
-it yet — that is #35. The one workflow that does is **`oidc-smoke.yml`**, plan-only, which
-plans all five modules as the UAMI and asserts that out-of-scope reads fail. There is still no
-`deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide `lint.yml` gate.
+Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
+`destroy.yml` authenticates as it, with no client-secret fallback anywhere in the pipeline.
+Losing or recreating the UAMI is therefore a full CI outage until the repo variables are
+updated — see the recovery section of the bootstrap runbook.
+
+The `oidc-smoke.yml` workflow that previously exercised it was deleted in the same change, once
+its five plan jobs duplicated the `deploy-*.yml` PR plans. Two coverage gaps followed: nothing
+now asserts what the identity *cannot* do (the `negative-access` job was the only such check),
+and a PR touching only `infra/identity/**` runs no Terraform, since no `deploy-*.yml` path
+filter matches it. Both are recoverable from git history if wanted.
+
+There is still no `deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide
+`lint.yml` gate.
 
 ---
 
@@ -144,22 +153,31 @@ Terraform CLI version from the repo-root `.terraform-version` file and
 runs its job under a `tf-<working_directory>` concurrency group, so two
 runs touching the same module's state queue instead of racing.
 
-Two per-module quirks are handled inside `_terraform.yml` with conditional
-steps keyed on `inputs.working_directory`, rather than the shared
-job-level `env:` block, since a static `env:` entry can't be scoped to one
-caller without leaking to the others — and, for credentials specifically,
-a static entry can silently win over a same-named value set later via
-`$GITHUB_ENV`, so there is no static fallback declared at all for the
-four variables below:
-- `infra/dns` and `infra/cloudflare` authenticate with the `AZURE_*`
-  secrets rather than `ARM_*` (see CLAUDE.md) via a dedicated `$GITHUB_ENV`
-  step, mutually exclusive with the one that sets `ARM_*` for
-  network/storage/compute; retiring that split is tracked separately
-  (E02.4).
-- `infra/dns`'s `rg_name` variable is populated from the
-  `RESOURCE_GROUP_NAME` secret for `infra/dns` only, since `rg_name` is
-  also declared (same default) by `infra/network`, `infra/storage`, and
-  `compute/vm`.
+Since E02.3 (#35) there are **no per-module conditional steps** in
+`_terraform.yml` at all. Every module authenticates the same way — one
+unconditional step exporting `ARM_USE_OIDC`, `ARM_USE_AZUREAD` and the three
+`ARM_*` identifiers from repo variables — and every `TF_VAR_*` value lives in
+the shared job-level `env:` block.
+
+Two `if: inputs.working_directory == ...` steps used to sit here, and both
+were removed rather than relocated:
+
+- The `AZURE_*` (dns/cloudflare) versus `ARM_*` (network/storage/compute)
+  credential split disappeared with the client secret itself — one identity
+  now serves all five modules.
+- `infra/dns` declared `rg_name`, colliding with the same-named variable in
+  `infra/network`, `infra/storage` and `compute/vm`, so its value could not be
+  set as a static `env:` entry without silently overriding those three
+  modules' defaults. It was renamed `dns_rg_name` — which is what
+  `compute/vm` already calls the same concept — so it now reads the
+  `TF_VAR_dns_rg_name` entry the workflow already set for every module.
+  The general rule: rename the colliding variable in the module; don't route
+  around the collision in the pipeline.
+
+Auth is still written via `$GITHUB_ENV` rather than a static `env:` entry.
+The fork that once made this necessary is gone, but the property still holds —
+a static entry silently wins over a same-named value written later to
+`$GITHUB_ENV`, so anything added here would fail confusingly.
 
 On `pull_request` events, `_terraform.yml` also posts the plan as a
 **sticky** PR comment (one comment per module, identified by a hidden
@@ -194,20 +212,24 @@ Both are blocking (`soft_fail: false`). The baseline (E01.6) was triaged rather 
 Dependabot-authored PRs carry a sharp edge: workflow runs triggered by
 `dependabot[bot]` (the `pull_request` run and the branch-push run alike)
 read **Dependabot secrets** — a separate store from Actions secrets, and
-none are configured there. Every `ARM_*`/`AZURE_*`/`CLOUDFLARE_*`/
-`DNS_ZONE_NAME`/`RESOURCE_GROUP_NAME` reference resolves to an empty
-string, so the Terraform job dies at `terraform init` (backend auth)
-before validate or plan ever runs; only TFLint/Checkov produce real
-signal on such a PR. A maintainer push to the PR branch (an empty commit
-is fine) re-triggers CI as that maintainer, restoring repository secrets
-and producing the real plan comment — this is how the azurerm 4→5 PRs
-(#143–#147) were driven to a meaningful CI result. The standing fix is to
-mirror the secrets into Settings → Secrets and variables → Dependabot
-(#138, roadmap R17). Expect that to fix init/plan but not necessarily to
-turn the check green on its own: Dependabot runs also get a read-only
-`GITHUB_TOKEN`, so the sticky plan-comment step is expected to 403. That
-remains unverified — the comment step is skipped whenever plan is
-skipped, so it has never actually executed on a Dependabot PR.
+none are configured there. Every `CLOUDFLARE_*`/`DNS_ZONE_NAME`/
+`RESOURCE_GROUP_NAME` reference resolves to an empty string, so the
+Terraform job fails before producing a real plan; only TFLint/Checkov
+produce real signal on such a PR. A maintainer push to the PR branch (an
+empty commit is fine) re-triggers CI as that maintainer, restoring
+repository secrets and producing the real plan comment — this is how the
+azurerm 4→5 PRs (#143–#147) were driven to a meaningful CI result. The
+standing fix is to mirror the secrets into Settings → Secrets and
+variables → Dependabot (#138, roadmap R17).
+
+E02.3 (#35) changed the likely failure mode, and #138 has not been
+re-tested since. Azure authentication no longer reads secrets at all —
+the three `ARM_*` identifiers are repo *variables*, which Dependabot runs
+can read — but Dependabot runs get a read-only `GITHUB_TOKEN`, so the job
+may now fail earlier, unable to mint the OIDC token that `id-token: write`
+requires, rather than at backend auth in `terraform init`. Treat the exact
+error on the next Dependabot PR as new information; don't assume mirroring
+the secrets alone will turn the check green.
 
 ### Repo hygiene
 

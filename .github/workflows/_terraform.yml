@@ -17,17 +17,12 @@ on:
         required: false
         type: string
         default: ''
-      use_oidc:
-        description: 'Authenticate as the federated UAMI instead of the client-secret SPs (E02.2 smoke test; becomes the default in E02.3/#35)'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
   pull-requests: write
-  # Real as of E02.2 — oidc-smoke.yml calls this workflow with use_oidc: true
-  # and the job needs to mint an OIDC token to exchange for an Azure one.
+  # Load-bearing for every caller as of E02.3 (#35): Azure auth is OIDC-only,
+  # so a job that cannot mint an OIDC token cannot authenticate at all.
   id-token: write
 
 jobs:
@@ -35,28 +30,27 @@ jobs:
     name: Terraform
     runs-on: ubuntu-latest
     concurrency:
-      # One group per module, shared by deploy and smoke runs alike, because
-      # the thing being protected is the module's state blob and both kinds of
-      # run take a lease on it.
+      # One group per module: the thing being protected is the module's state
+      # blob, and every run that plans or applies takes a lease on it.
       #
-      # This was briefly split into a separate tf-<dir>-oidc-smoke group to stop
-      # smoke jobs being cancelled when a deploy run queued for the same module.
-      # That traded a cosmetic problem for a real one: a PR touching the deploy
-      # workflows re-triggers all five of them on every push (pull_request path
-      # filters match the PR's whole diff, not just the newest commit), so the
-      # smoke jobs and the deploy jobs ran simultaneously and four deploy plans
-      # died on "state blob is already locked".
-      #
-      # Serialization is the correct trade. The cost is that when three runs
-      # queue for one module, GitHub keeps only one pending and cancels the
-      # middle one — noisy, but a cancelled plan breaks nothing, while a lock
-      # collision fails real work and could strand an apply mid-flight.
+      # Any future workflow that also runs Terraform against a module must join
+      # this same group rather than defining its own. When oidc-smoke.yml
+      # existed, a separate tf-<dir>-oidc-smoke group was tried and reverted —
+      # the two sets of jobs then ran simultaneously and four plans died on
+      # "state blob is already locked". Serializing is the correct trade: a
+      # queued run that gets cancelled breaks nothing, while a lock collision
+      # fails real work and could strand an apply mid-flight.
       group: tf-${{ inputs.working_directory }}
       cancel-in-progress: false
     env:
-      # Serves compute/vm's dns_zone_name/dns_rg_name (self-registered DNS
-      # A-record); infra/dns's own dns_zone_name variable happens to share
-      # the first name too. Do not remove.
+      # Shared by compute/vm (self-registered DNS A-record) and infra/dns, which
+      # declare these variables with the same names and the same meaning. Safe as
+      # static env for exactly that reason — no other module declares either name,
+      # so nothing else can be overridden by accident. Do not remove.
+      #
+      # infra/dns reached TF_VAR_dns_rg_name by renaming its `rg_name` variable;
+      # under the old name it collided with infra/network/storage/compute and
+      # needed an if:-gated step here instead. See infra/dns/variables.tf.
       TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
       TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
       # infra/cloudflare-only variable names; safe as static env since they
@@ -70,13 +64,20 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v7
 
-      # ARM_* auth is set entirely via $GITHUB_ENV, not a static env:
-      # entry, so there's exactly one unambiguous source per run instead
-      # of a static value that a later override could silently lose to.
-      # network/storage/compute use the ARM_* secrets.
-      # E02.2 (#34): the keyless path, exercised today only by oidc-smoke.yml.
-      # ARM_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID come from repo *variables* —
-      # they are identifiers, not credentials (infra/identity/outputs.tf).
+      # E02.3 (#35): one keyless path for every module. This replaced a
+      # three-way fork — ARM_* secrets for network/storage/compute, AZURE_*
+      # secrets for dns/cloudflare, and this step behind a use_oidc flag —
+      # with a single identity, so there is no longer any per-module
+      # credential branching to keep straight.
+      #
+      # ARM_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID come from repo *variables*,
+      # not secrets: they are identifiers, not credentials
+      # (infra/identity/outputs.tf says the same thing at the source).
+      #
+      # Still written via $GITHUB_ENV rather than a static env: entry. The
+      # fork it used to disambiguate is gone, but the property is worth
+      # keeping — a static entry silently wins over a later $GITHUB_ENV
+      # write, so anything added here later would fail confusingly.
       #
       # ARM_USE_AZUREAD is load-bearing, not cosmetic: without it the azurerm
       # backend authenticates to blob storage by calling listKeys on the state
@@ -84,41 +85,12 @@ jobs:
       # account — only Storage Blob Data Contributor on the tfstate container.
       # Omit it and `terraform init` fails before validate ever runs.
       - name: Use OIDC federated credentials
-        if: inputs.use_oidc == true
         run: |
           echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
           echo "ARM_USE_AZUREAD=true" >> "$GITHUB_ENV"
           echo "ARM_CLIENT_ID=${{ vars.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
           echo "ARM_SUBSCRIPTION_ID=${{ vars.ARM_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
           echo "ARM_TENANT_ID=${{ vars.ARM_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      - name: Use ARM_* credentials
-        if: inputs.use_oidc != true && inputs.working_directory != 'infra/dns' && inputs.working_directory != 'infra/cloudflare'
-        run: |
-          echo "ARM_CLIENT_ID=${{ secrets.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_CLIENT_SECRET=${{ secrets.ARM_CLIENT_SECRET }}" >> "$GITHUB_ENV"
-          echo "ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_TENANT_ID=${{ secrets.ARM_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      # infra/dns and infra/cloudflare authenticate with the AZURE_*
-      # secrets instead (retiring that split is tracked separately,
-      # E02.4).
-      - name: Use AZURE_* credentials for dns/cloudflare
-        if: inputs.use_oidc != true && (inputs.working_directory == 'infra/dns' || inputs.working_directory == 'infra/cloudflare')
-        run: |
-          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" >> "$GITHUB_ENV"
-          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      # infra/dns's rg_name variable collides by name with the rg_name
-      # variable declared (same "homelab-rg" default) by infra/network,
-      # infra/storage, and compute/vm. A static env: entry would silently
-      # override those three modules' defaults too, so this is scoped to
-      # infra/dns only, same pattern as above.
-      - name: Set rg_name for infra/dns
-        if: inputs.working_directory == 'infra/dns'
-        run: echo "TF_VAR_rg_name=${{ secrets.RESOURCE_GROUP_NAME }}" >> "$GITHUB_ENV"
 
       - name: Read pinned Terraform version
         id: tfversion
@@ -152,14 +124,14 @@ jobs:
             terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
           fi
 
-      # Skipped for smoke runs: oidc-smoke.yml plans the same five modules a
-      # PR's own deploy-*.yml runs already plan, and both would write the same
-      # sticky `tf-plan: <dir>` comment and clobber each other. What the smoke
-      # run is asserting is auth, not the diff — pass/fail is the whole signal.
-      # E02.3 (#35): when OIDC becomes the only auth path, drop the use_oidc
-      # clause here or PR plan comments stop appearing entirely.
+      # One sticky comment per module, keyed by the `tf-plan: <dir>` marker.
+      # There was a suppression input here while oidc-smoke.yml existed, so its
+      # plans of the same five modules could not clobber these comments; with
+      # that workflow deleted, every run reaching this step is the one run that
+      # should own its module's comment. Reintroduce the opt-out if a second
+      # workflow ever plans the same directory.
       - name: Comment plan on PR
-        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request' && inputs.use_oidc != true"
+        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request'"
         uses: actions/github-script@v9
         with:
           script: |
