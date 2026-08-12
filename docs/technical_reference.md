@@ -115,10 +115,19 @@ rather than repo secrets. `granted_scopes` is the audit surface: diff it against
 `az role assignment list --assignee <principal_id> --all`.
 
 ### Current state
-The identity has its permissions but no production traffic: no `deploy-*.yml` authenticates as
-it yet — that is #35. The one workflow that does is **`oidc-smoke.yml`**, plan-only, which
-plans all five modules as the UAMI and asserts that out-of-scope reads fail. There is still no
-`deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide `lint.yml` gate.
+Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
+`destroy.yml` authenticates as it, with no client-secret fallback anywhere in the pipeline.
+Losing or recreating the UAMI is therefore a full CI outage until the repo variables are
+updated — see the recovery section of the bootstrap runbook.
+
+The `oidc-smoke.yml` workflow that previously exercised it was deleted in the same change, once
+its five plan jobs duplicated the `deploy-*.yml` PR plans. Two coverage gaps followed: nothing
+now asserts what the identity *cannot* do (the `negative-access` job was the only such check),
+and a PR touching only `infra/identity/**` runs no Terraform, since no `deploy-*.yml` path
+filter matches it. Both are recoverable from git history if wanted.
+
+There is still no `deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide
+`lint.yml` gate.
 
 ---
 

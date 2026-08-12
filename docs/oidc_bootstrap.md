@@ -32,9 +32,9 @@ The identity gets its own resource group rather than living in `homelab-rg`, bec
 apply away from locking CI out of Azure.
 
 The three role assignments are E02.2 (#34); see [Step 4](#step-4--the-rbac-grants-e022) for
-what each one is for and what it deliberately excludes. The workflow cutover is still #35 —
-nothing in CI authenticates as this identity yet, apart from the plan-only
-`oidc-smoke.yml`.
+what each one is for and what it deliberately excludes. Since the E02.3 cutover (#35), **every
+Terraform workflow in the repo authenticates as this identity** — there is no client-secret
+fallback left in CI, so this module is now a hard dependency of the whole pipeline.
 
 ## Step 0 — prerequisites (out-of-band, once)
 
@@ -218,43 +218,58 @@ its `Use OIDC federated credentials` step.
 
 ## Step 5 — prove it end to end
 
-The identity can only be assumed from a GitHub Actions run, so the functional proof lives in
-CI: **`.github/workflows/oidc-smoke.yml`**, plan-only, with no apply path at all.
-
-- It runs automatically on any PR touching `infra/identity/**`, `_terraform.yml`, or the smoke
-  workflow itself. PR runs are what work pre-merge — their OIDC subject is
-  `repo:114snehasish/homelab:pull_request`, which matches a federated credential, whereas a
-  feature-branch push run's subject matches neither (see the branch-scoping section below).
-- It can also be dispatched manually, once the file is on `main`.
-- Five jobs plan the five modules as the UAMI; a sixth asserts what the identity *cannot* do —
-  read RG `do-not-delete`, list the storage account keys, or see its own resource group — with
-  a positive control (`az group show -n homelab-rg`) so a broken login cannot masquerade as a
-  pass.
+The identity can only be assumed from a GitHub Actions run, so the functional proof lives in CI.
+Since E02.3 (#35), that proof is the ordinary `deploy-*.yml` PR plans: they authenticate as this
+UAMI, take a lease on each module's state blob, and read across `homelab-rg` plus the one SSH key
+in `do-not-delete`. A green set of PR plans means the identity's *positive* grants are intact.
 
 It needs the repo **variables** `ARM_CLIENT_ID`, `ARM_TENANT_ID` and `ARM_SUBSCRIPTION_ID` from
-step 2 to exist. Set them before the first run: Settings → Secrets and variables → Actions →
-*Variables*. Since E02.3 (#35) every workflow in the repo reads the same three — if they are
-wrong or missing, nothing that touches Azure can run, not just the smoke test.
+step 2 to exist: Settings → Secrets and variables → Actions → *Variables*. Every workflow in the
+repo reads the same three — if they are wrong or missing, nothing that touches Azure can run.
 
-### Lifecycle: this workflow is permanent
+### What the PR plans do not prove
 
-`oidc-smoke.yml` is not scaffolding for the E02 cutover, and nothing reverts it when the epic
-finishes. It is the standing regression test for the identity's RBAC surface, and the two halves
-age differently:
+Three things, worth knowing before trusting a green check:
 
-- **The negative-access job has no substitute.** Every other check in the repo proves the
-  identity *can* do something; this is the only one that proves it *cannot*. Anything that
-  quietly widens the grants — a broadened scope, a role added out of band, a future module
-  reaching past `homelab-rg` — turns it red and nothing else would. Keep it whatever happens in
-  #35/#36.
-- **The five plan jobs get partly redundant after #35**, since the `deploy-*.yml` PR plans will
-  then exercise the same identity on the same modules. What they retain is being dispatchable on
-  demand: one button that answers "is CI's identity still healthy?" without needing a module to
-  have changed. Worth revisiting in #35 if smoke runs start costing real time; not before.
+- **Only the `:pull_request` credential is exercised.** The `:ref:refs/heads/main` credential is
+  used by push-to-`main` runs and by every `workflow_dispatch` — including all applies. A PR
+  going green says nothing about it.
+- **No ARM write.** Plans only read. `Contributor` on `homelab-rg` is not exercised until an
+  apply runs.
+- **No state *content* write.** Acquiring the lock is a lease, which does require a write-class
+  data action (`Storage Blob Data Reader` cannot lease), but Terraform only writes the state blob
+  on apply.
 
-One rule for anyone tempted to prune it: **never trim a job to turn a red check green.** A
-failing smoke plan means a prerequisite is genuinely missing — during E02.2 it correctly caught
-a data disk that had been deleted out of band, on both auth paths.
+All three close with one action: dispatch `deploy-storage.yml` from `main` with apply checked.
+That run uses the `main` credential, performs a real ARM write, and writes state.
+
+### Removed: `oidc-smoke.yml`
+
+A dedicated smoke workflow existed from E02.2 and was deleted in E02.3 (#35) once its five plan
+jobs duplicated the `deploy-*.yml` PR plans. Deleting it cost two things that nothing else
+covers, both deliberate and both worth re-reading before assuming CI has you covered:
+
+- **Nothing asserts what the identity *cannot* do.** The deleted `negative-access` job proved the
+  UAMI could not read RG `do-not-delete`, could not `listKeys` on the state storage account, and
+  could not see its own resource group — with a positive control so a broken login could not fake
+  a pass. Every remaining check proves the identity *can* do something. A change that quietly
+  widens the grants — a broadened scope, a role added out of band, a future module reaching past
+  `homelab-rg` — now goes unnoticed.
+- **`infra/identity/**` and `_terraform.yml` have no Terraform coverage.** No `deploy-*.yml` path
+  filter matches either, so a PR touching only those runs no plan at all.
+
+To restore the assertions, recover the file verbatim from git history:
+
+```
+git log --oneline --diff-filter=D -- .github/workflows/oidc-smoke.yml
+git show <commit>^:.github/workflows/oidc-smoke.yml > .github/workflows/oidc-smoke.yml
+```
+
+The cheap version is to bring back the `negative-access` job alone, on a schedule or as
+dispatch-only — it needs no Terraform, just `azure/login@v2` and four `az` calls. If you do,
+one rule holds: **never trim a job to turn a red check green.** A failure there means a
+prerequisite is genuinely missing — during E02.2 it correctly caught a data disk deleted out of
+band, on both auth paths.
 
 ## Recovery / re-bootstrap
 
@@ -264,16 +279,14 @@ that `lifecycle` block first — treat needing to as a signal to stop and think.
 Recreating the identity mints a **new `client_id`** and a new `principal_id`. Terraform
 re-creates the three role assignments for you in the same apply — they reference the UAMI
 directly — but the repo variables are yours to update, or every workflow run fails
-authentication. Re-run `oidc-smoke.yml` afterwards; that is exactly the regression it is there
-to catch.
+authentication. To confirm afterwards, open a trivial PR touching any module directory and check
+its plan goes green, or dispatch `deploy-storage.yml` from `main` with apply unchecked.
 
 Since E02.3 (#35) this is a full CI outage, not a degraded mode: every Terraform workflow
 authenticates as this identity, so the window between recreating the UAMI and updating the repo
-variables is a window in which nothing deploys. Break-glass is unchanged — a local apply with
-the SP in `.env` — but it is now the *only* way to act on Azure during that window.
-
-Break-glass throughout E02: local applies keep working with the SP in `.env` regardless of the
-state of OIDC. That is the escape hatch behind roadmap risk **R8**.
+variables is a window in which nothing deploys. Break-glass is unchanged — local applies keep
+working with the SP in `.env` regardless of the state of OIDC, which is the escape hatch behind
+roadmap risk **R8** — but it is now the *only* way to act on Azure during that window.
 
 ## Branch scoping of the `push:` triggers (closed in E02.3, #35)
 
@@ -285,7 +298,7 @@ other than `main` can only fail at auth.**
 was harmless while CI used a client secret and would have failed every feature-branch push once
 OIDC became the only path. #35 closed it by adding `branches: [main]` to all five `push:`
 triggers; `pull_request` runs, whose subject matches, are what give a feature branch its plan.
-`oidc-smoke.yml` has no `push:` trigger at all, for the same reason.
+Any workflow added later that touches Azure needs the same treatment.
 
 Keep it that way. A wildcard federated credential is the wrong fix — it would trust every
 branch in the repo, including one an attacker with push access could create.

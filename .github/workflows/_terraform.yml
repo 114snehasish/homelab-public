@@ -17,11 +17,6 @@ on:
         required: false
         type: string
         default: ''
-      suppress_plan_comment:
-        description: 'Skip the sticky PR plan comment (oidc-smoke.yml, so its plans do not clobber the deploy workflows'' comments)'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -35,22 +30,16 @@ jobs:
     name: Terraform
     runs-on: ubuntu-latest
     concurrency:
-      # One group per module, shared by deploy and smoke runs alike, because
-      # the thing being protected is the module's state blob and both kinds of
-      # run take a lease on it.
+      # One group per module: the thing being protected is the module's state
+      # blob, and every run that plans or applies takes a lease on it.
       #
-      # This was briefly split into a separate tf-<dir>-oidc-smoke group to stop
-      # smoke jobs being cancelled when a deploy run queued for the same module.
-      # That traded a cosmetic problem for a real one: a PR touching the deploy
-      # workflows re-triggers all five of them on every push (pull_request path
-      # filters match the PR's whole diff, not just the newest commit), so the
-      # smoke jobs and the deploy jobs ran simultaneously and four deploy plans
-      # died on "state blob is already locked".
-      #
-      # Serialization is the correct trade. The cost is that when three runs
-      # queue for one module, GitHub keeps only one pending and cancels the
-      # middle one — noisy, but a cancelled plan breaks nothing, while a lock
-      # collision fails real work and could strand an apply mid-flight.
+      # Any future workflow that also runs Terraform against a module must join
+      # this same group rather than defining its own. When oidc-smoke.yml
+      # existed, a separate tf-<dir>-oidc-smoke group was tried and reverted —
+      # the two sets of jobs then ran simultaneously and four plans died on
+      # "state blob is already locked". Serializing is the correct trade: a
+      # queued run that gets cancelled breaks nothing, while a lock collision
+      # fails real work and could strand an apply mid-flight.
       group: tf-${{ inputs.working_directory }}
       cancel-in-progress: false
     env:
@@ -135,16 +124,14 @@ jobs:
             terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
           fi
 
-      # Skipped for smoke runs: oidc-smoke.yml plans the same five modules a
-      # PR's own deploy-*.yml runs already plan, and both would write the same
-      # sticky `tf-plan: <dir>` comment and clobber each other. What the smoke
-      # run is asserting is RBAC, not the diff — pass/fail is the whole signal.
-      #
-      # This used to key off use_oidc, which worked only while OIDC and "is a
-      # smoke run" meant the same thing. E02.3 (#35) made every run an OIDC
-      # run, so the condition is now the explicit input it always meant.
+      # One sticky comment per module, keyed by the `tf-plan: <dir>` marker.
+      # There was a suppression input here while oidc-smoke.yml existed, so its
+      # plans of the same five modules could not clobber these comments; with
+      # that workflow deleted, every run reaching this step is the one run that
+      # should own its module's comment. Reintroduce the opt-out if a second
+      # workflow ever plans the same directory.
       - name: Comment plan on PR
-        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request' && inputs.suppress_plan_comment != true"
+        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request'"
         uses: actions/github-script@v9
         with:
           script: |
