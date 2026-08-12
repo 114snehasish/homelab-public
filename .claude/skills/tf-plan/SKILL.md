@@ -13,11 +13,19 @@ Dependency order for `all`: `infra/network` → `infra/dns` → `infra/cloudflar
 
 ## Environment
 
-Before running, export Azure credentials from the gitignored root `.env` (contains `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`):
+Azure auth is the operator's own `az login` session — there is no service-principal secret any
+more (retired in E02.4, #36). Confirm one exists and that the subscription ID is exported before
+planning; if `az account show` fails, tell the user to run `az login` rather than trying to
+authenticate for them:
 
 ```bash
-set -a; source .env; set +a
+az account show          # must succeed
+export ARM_SUBSCRIPTION_ID=<subscription_id>
 ```
+
+- `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/`ARM_TENANT_ID` must stay **unset**. If they are exported
+  they take precedence over the `az login` session and every plan fails at authentication —
+  check for them first when a plan dies on auth.
 
 - `infra/cloudflare` additionally needs `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_zone_id` — if unset, tell the user and skip that module rather than letting the plan prompt/hang.
 - `infra/dns` and `compute/vm` need `terraform.tfvars` (copy from `terraform.tfvars.example` if missing — ask the user for values, never invent them).

@@ -15,7 +15,7 @@ Grow this five-module Terraform homelab into a **mini-enterprise** while learnin
 Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner-approved 2026-07-04):
 
 1. **Apply gate unified to manual dispatch for all five modules** — dns/cloudflare lose auto-apply-on-push (E01). Plans run and comment on every PR; applies are always a deliberate checkbox.
-2. **CI auth moves to OIDC federated identity** — `ARM_CLIENT_SECRET` dies, and with it the `ARM_*` vs `AZURE_*` secret-name split (E02).
+2. **CI auth moves to OIDC federated identity** — `ARM_CLIENT_SECRET` dies, and with it the `ARM_*` vs `AZURE_*` secret-name split (E02). *Landed: #35 cut every workflow over to the UAMI; #36 deleted the leftover secrets and retired the old service principal's credential in Entra.*
 
 ### Stack picks
 
@@ -101,7 +101,7 @@ Sequencing rules that are **not optional**:
 | R5 | Auto-apply fires while workflows are edited | #28 gate flip is the first workflow PR |
 | R6 | Public mirror leaks attack surface / secrets | Wildcard cert + wildcard DNS (no enumeration); admin UIs tailnet-only (#46); secrets only in Key Vault (E05) |
 | R7 | Vaultwarden before a tested restore | #45 blocked on #58 |
-| R8 | OIDC cutover bricks all CI at once | #35 validates per-module while old secrets exist; #36 deletes them only after |
+| R8 | OIDC cutover bricks all CI at once | #35 validated per-module while the old secrets still existed; #36 deleted them only after. Closed — with the SP credential retired, break-glass is now a local apply as the owner (`az login` + `ARM_SUBSCRIPTION_ID`), which is the only non-CI path to Azure |
 | R9 | Agent pods borrow the VM's managed identity via IMDS | #89 NetworkPolicy blocks 169.254.169.254 from the runner namespace |
 | R10 | Anthropic API spend invisible to Azure budgets | #93 console spend ceiling + monthly cost review |
 | R11 | Prompt injection via untrusted issue text | PR-only GitHub App, human-only merges, owner-applied trigger labels (#90–#92) |

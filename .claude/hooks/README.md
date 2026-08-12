@@ -6,7 +6,8 @@ Hooks that guard this repo when it's edited through Claude Code.
 
 Denies any tool call that would read, write, or reference a `.env` secrets file.
 
-**Why.** The root `.env` holds Azure credentials (`ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, …),
+**Why.** The root `.env` holds live credentials — the Cloudflare API token today, and whatever
+comes next (it held the Azure service-principal secret until E02.4, #36, retired it) —
 and `main` is force-mirrored to a **public** GitHub repo on every push
 (`.github/workflows/mirror.yml`). Pulling `.env` contents into the transcript is a real
 leak vector, so we block it at the tool boundary — defense-in-depth on top of `.env`

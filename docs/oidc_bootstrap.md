@@ -7,8 +7,9 @@ goes through GitHub Actions.
 
 `infra/identity` creates the Azure identity that GitHub Actions will eventually authenticate
 *as*. It cannot deploy itself through CI, because the credential CI would need to run it is the
-very thing it creates. That chicken-and-egg is resolved the boring way: one local apply with the
-existing service principal, documented here.
+very thing it creates. That chicken-and-egg is resolved the boring way: one local apply as the
+subscription owner (`az login`), documented here. It was originally applied with the old service
+principal's secret, which E02.4 (#36) has since retired.
 
 There is deliberately **no `deploy-identity.yml`**. The five module workflows stay as they are.
 
@@ -50,10 +51,11 @@ The azurerm 5.x provider defaults `resource_provider_registrations = "none"` (se
 Terraform will **not** register this for you. Skipping this step fails the apply with an error
 that talks about an unsupported API version rather than a missing registration.
 
-### 0b — confirm the bootstrap SP can hand out roles
+### 0b — confirm whoever applies this can hand out roles
 
 ```bash
-az role assignment list --assignee "$ARM_CLIENT_ID" --all -o table
+az login
+az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all -o table
 ```
 
 Creating a role assignment needs `Microsoft.Authorization/roleAssignments/write` — i.e. **Owner
@@ -61,23 +63,21 @@ or User Access Administrator**, at each scope being granted. Contributor is not 
 much else it can do; this is the one permission Contributor pointedly excludes, so that a
 compromised Contributor cannot promote itself.
 
-**This lab's SP does not have it.** That is settled, not hypothetical — the first real apply of
-this module failed with a 403 on `roleAssignments/write`. So step 1 below defaults to applying
-as yourself. The alternative, granting the SP User Access Administrator over the three scopes,
-produces identical resources but widens a credential that E02.4 (#36) is about to retire — hard
-to justify for a one-time apply.
+**This lab's SP did not have it.** That is settled, not hypothetical — the first real apply of
+this module failed with a 403 on `roleAssignments/write`. So step 1 below applies as yourself.
 
-Keep the output of that command: #36 needs an inventory of the old SP's subscription-level
-rights before it retires the credential, and #34's PR description is where it gets recorded.
-"Cannot create role assignments" is now one confirmed entry in that inventory.
+> **Historical, as of E02.4 (#36).** That service principal is retired: its client secret was
+> rotated and then removed in Entra, so it can no longer authenticate at all. The command above
+> is kept because it is still the right check to run against *whatever* identity you are about
+> to apply as — substitute your own principal. "Cannot create role assignments" was the last
+> confirmed entry in the inventory #36 took before retiring the credential.
 
 ## Step 1 — apply locally
 
-This module is the one exception to the repo's usual "source `.env` and run Terraform" habit.
-Every other module is applied by the CI service principal; this one grants role assignments,
-which that principal cannot do. Pick a path before you start.
-
-### Path A — as yourself (the normal route)
+Apply this module as **yourself**. Since E02.4 (#36) that is not merely the recommended route,
+it is the only one that exists: the service principal this repo used to authenticate with holds
+no client secret any more, and the CI identity deliberately has no rights over
+`homelab-identity-rg` — nor `roleAssignments/write` anywhere.
 
 ```bash
 az login
@@ -88,27 +88,18 @@ export ARM_SUBSCRIPTION_ID=<subscription_id>
 unset ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID
 ```
 
-> **The `unset` is the load-bearing line.** `ARM_CLIENT_ID` + `ARM_CLIENT_SECRET` take
-> precedence over your `az login` session: with them set, the azurerm provider authenticates as
-> the service principal no matter who is logged into the CLI. If you have sourced `.env` in this
-> shell at any point, logging in as yourself changes nothing until you unset them — the apply
-> fails exactly as if you had never logged in. Either unset them, or use a fresh shell that
-> never sourced `.env`.
+> **The `unset` is still the load-bearing line.** `ARM_CLIENT_ID` + `ARM_CLIENT_SECRET` take
+> precedence over your `az login` session: with them set, the azurerm provider tries to
+> authenticate as the service principal no matter who is logged into the CLI. Before #36 that
+> meant silently applying *as the SP*; now that the SP has no secret, it means failing
+> authentication outright while looking as though your `az login` did not take. Either unset
+> them, or use a fresh shell that never exported them.
 
 `ARM_SUBSCRIPTION_ID` is safe to keep and is still required — it is an identifier, not a
 credential. Your account needs Owner or User Access Administrator over the three scopes in step
 4, plus the rights to create a resource group and a managed identity.
 
-### Path B — as the service principal
-
-Only after granting that SP User Access Administrator at the three scopes (see step 0b — by
-default it does **not** have it):
-
-```bash
-set -a; source .env; set +a
-```
-
-### Then, either way
+### Then
 
 ```bash
 cd infra/identity
@@ -125,6 +116,13 @@ count, the plan must show **0 to change and 0 to destroy** — `listeninfratfsta
 `do-not-delete` and the SSH key are read through data sources and must never appear as managed
 resources.
 
+### The service-principal path is gone
+
+An earlier version of this runbook offered a second route: source the SP credentials from the
+gitignored root env file, after granting that principal User Access Administrator at the three
+scopes. E02.4 (#36) removed the credential, so that path no longer exists — and it was always
+the worse one, since it widened a long-lived secret for a single one-time apply.
+
 ### When it goes wrong
 
 The characteristic failure: `plan` succeeds, then `apply` dies on the first
@@ -134,10 +132,12 @@ credentials. The error carries a **403** with `Code="AuthorizationFailed"` and n
 service principal's client ID rather than to you. (Exact wording varies with the provider
 version; those three markers are what identify it.)
 
-That is path B without the User Access Administrator grant — most often because the shell still
-carried `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET` from `.env`, so Terraform authenticated as the SP
-even though `az login` had been run as a human. Fix it by switching to path A (`az login`, then
-the `unset` above) and re-running `terraform apply`. The partial apply is not a problem:
+That was the retired service-principal path without the User Access Administrator grant — most
+often because the shell still carried `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`, so Terraform
+authenticated as the SP even though `az login` had been run as a human. Post-#36 the same stale
+variables fail at *authentication* instead, since the secret they carry is no longer valid —
+different error, same root cause. Fix it the same way: `az login`, run the `unset` above, re-run
+`terraform apply`. The partial apply is not a problem:
 Terraform recorded what it created, and the re-run adds only the three role assignments.
 
 ## Step 2 — record the outputs
@@ -204,9 +204,9 @@ subscription-level write regardless. So CI can manage the existing `homelab-rg` 
 bring it back after a deletion.
 
 This is tolerable by design: `destroy.yml` deliberately never destroys `infra/network`, and the
-break-glass path is a local apply with the SP from `.env` (roadmap risk **R8**). If the RG is
-ever lost, recreate it locally, then re-apply `infra/identity` to restore the role assignment
-that went down with it.
+break-glass path is a local apply as the owner via `az login` (roadmap risk **R8**; before E02.4
+it was the service principal). If the RG is ever lost, recreate it locally, then re-apply
+`infra/identity` to restore the role assignment that went down with it.
 
 ### Backend auth: `ARM_USE_AZUREAD` is not optional
 
@@ -284,9 +284,11 @@ its plan goes green, or dispatch `deploy-storage.yml` from `main` with apply unc
 
 Since E02.3 (#35) this is a full CI outage, not a degraded mode: every Terraform workflow
 authenticates as this identity, so the window between recreating the UAMI and updating the repo
-variables is a window in which nothing deploys. Break-glass is unchanged — local applies keep
-working with the SP in `.env` regardless of the state of OIDC, which is the escape hatch behind
-roadmap risk **R8** — but it is now the *only* way to act on Azure during that window.
+variables is a window in which nothing deploys. Break-glass is a local apply **as the owner**
+(`az login`, then `export ARM_SUBSCRIPTION_ID=<id>` with the `ARM_CLIENT_*` variables unset).
+That is the escape hatch behind roadmap risk **R8**, and since E02.4 (#36) retired the service
+principal it is the only credential outside CI that can still reach Azure — and the only way to
+act on Azure at all during that window.
 
 ## Branch scoping of the `push:` triggers (closed in E02.3, #35)
 

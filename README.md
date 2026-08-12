@@ -37,10 +37,27 @@ I have put comprehensive documentation under the `docs/` directory to help you u
 - Terraform v1.x
 - GitHub Account (for my CI/CD pipelines)
 
+### Credentials
+There is **no Azure password anywhere in this repo or its settings.** My pipelines federate
+into the managed identity from `infra/identity` over OIDC, using three repo *variables*
+(`ARM_CLIENT_ID`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`) — identifiers, not secrets. The repo
+secrets that remain are all non-Azure: `DNS_ZONE_NAME`, `RESOURCE_GROUP_NAME`, `CLOUDFLARE_*`,
+and the mirror tokens.
+
+Locally I authenticate as myself:
+
+```bash
+az login
+export ARM_SUBSCRIPTION_ID=<subscription_id>
+```
+
+The old service-principal credential was retired in E02.4, so nothing reads
+`ARM_CLIENT_SECRET` any more — if it's still exported in your shell it will override
+`az login` and break the plan. I also create `terraform.tfvars` locally where a module needs
+one (copy from `.example`).
+
 ### Deployment Order
 To lay this foundation, I deploy the modules in this specific dependency order:
-
-**Note:** Ensure you have set the required secrets in GitHub and created `terraform.tfvars` locally (copy from `.example`).
 
 0.  **Identity** (`infra/identity`) — *one-time bootstrap, local only*
     The managed identity my CI federates into for keyless OIDC auth. It cannot deploy itself

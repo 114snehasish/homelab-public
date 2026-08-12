@@ -117,8 +117,11 @@ rather than repo secrets. `granted_scopes` is the audit surface: diff it against
 ### Current state
 Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
 `destroy.yml` authenticates as it, with no client-secret fallback anywhere in the pipeline.
-Losing or recreating the UAMI is therefore a full CI outage until the repo variables are
-updated — see the recovery section of the bootstrap runbook.
+E02.4 (#36) made that permanent — the leftover `ARM_*`/`AZURE_*` secrets are deleted from repo
+settings and the old service principal's client secret is rotated out and removed in Entra, so
+this UAMI is not merely the primary path to Azure from CI, it is the only one. Losing or
+recreating it is therefore a full CI outage until the repo variables are updated; break-glass is
+a local apply as the owner (`az login`) — see the recovery section of the bootstrap runbook.
 
 The `oidc-smoke.yml` workflow that previously exercised it was deleted in the same change, once
 its five plan jobs duplicated the `deploy-*.yml` PR plans. Two coverage gaps followed: nothing
@@ -175,7 +178,8 @@ were removed rather than relocated:
 
 - The `AZURE_*` (dns/cloudflare) versus `ARM_*` (network/storage/compute)
   credential split disappeared with the client secret itself — one identity
-  now serves all five modules.
+  now serves all five modules. E02.4 (#36) then deleted both secret sets from
+  repo settings outright, so the split is not merely unused, it is gone.
 - `infra/dns` declared `rg_name`, colliding with the same-named variable in
   `infra/network`, `infra/storage` and `compute/vm`, so its value could not be
   set as a static `env:` entry without silently overriding those three
@@ -189,6 +193,25 @@ Auth is still written via `$GITHUB_ENV` rather than a static `env:` entry.
 The fork that once made this necessary is gone, but the property still holds —
 a static entry silently wins over a same-named value written later to
 `$GITHUB_ENV`, so anything added here would fail confusingly.
+
+### Credential inventory (post-E02.4, #36)
+
+The authoritative list of what exists and where. Diff repo Settings against it; anything else
+under Azure is drift.
+
+| Name | Where it lives | Notes |
+|---|---|---|
+| `ARM_CLIENT_ID`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID` | Repo **variables** (Settings → Secrets and variables → Actions → *Variables*) | Identifiers, not credentials. Read as `vars.*` in `_terraform.yml`. No same-named secrets remain — #36 deleted them. |
+| `DNS_ZONE_NAME`, `RESOURCE_GROUP_NAME` | Repo secrets | Non-Azure-credential config, consumed as `TF_VAR_*`. |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` | Repo secrets | The last real API credential in CI; migrates to Key Vault in E05.4. |
+| `PUBLIC_REPO_URL`, `PUBLIC_REPO_TOKEN` | Repo secrets | `mirror.yml` only. |
+| Local Azure auth | `az login` on the operator's machine | Owner identity + `ARM_SUBSCRIPTION_ID`. This is also the break-glass path (risk **R8**). |
+
+Gone as of E02.4 (#36): `ARM_CLIENT_SECRET`, the whole duplicate `AZURE_*` set, and the old
+service principal's client secret in Entra (rotated, then removed). Nothing in
+`.github/workflows/` references a client secret — the consequence worth internalising is that
+the OIDC cutover is **not** a one-commit rollback any more, because there is no working secret
+to roll back to.
 
 On `pull_request` events, `_terraform.yml` also posts the plan as a
 **sticky** PR comment (one comment per module, identified by a hidden
