@@ -147,11 +147,22 @@ All five workflows — `deploy-network.yml`, `deploy-dns.yml`,
 are thin wrappers: their `jobs:` block only declares triggers/inputs, then
 delegates the actual init → validate → plan → dispatch-gated apply sequence
 to **`_terraform.yml`**, a `workflow_call`-only reusable workflow
-parameterized by `working_directory` (module path), `apply`, and an
-optional `ssh_source_ip` (network only). `_terraform.yml` pins the
+parameterized by `working_directory` (module path), `apply`, an
+optional `ssh_source_ip` (network only), and `destroy` (`destroy.yml`
+only — see below). `_terraform.yml` pins the
 Terraform CLI version from the repo-root `.terraform-version` file and
 runs its job under a `tf-<working_directory>` concurrency group, so two
 runs touching the same module's state queue instead of racing.
+
+All five also list `.github/workflows/_terraform.yml` in their `push` and
+`pull_request` path filters (#153): without it, a PR that changed only the
+shared workflow matched no filter and ran no Terraform at all, so the file
+every module's CI depends on was the one file CI never exercised.
+
+`destroy` (boolean, default `false`) switches the plan step to
+`terraform plan -destroy`. It has no apply gate of its own — the saved plan
+file is applied by the same `inputs.apply` step in either direction, which
+keeps one gate to reason about on the only path that deletes real resources.
 
 Since E02.3 (#35) there are **no per-module conditional steps** in
 `_terraform.yml` at all. Every module authenticates the same way — one
@@ -193,9 +204,9 @@ drift, until #54 (E06.4) removes the ipify data source.
 ### Overall pipelines
 
 - **`deploy.yml`** (manual dispatch): calls the five per-module workflows in dependency order — network → dns → cloudflare → storage → compute — with `secrets: inherit`. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.
-- **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**: the disk lives inside `homelab-rg`, so the network module cannot be destroyed while the disk exists, and the remaining VNet/subnet/NSG/RG are free; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only.
+- **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**: the disk lives inside `homelab-rg`, so the network module cannot be destroyed while the disk exists, and the remaining VNet/subnet/NSG/RG are free; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only. Since #153 both of its jobs are thin `uses:` callers of `_terraform.yml`, identical in shape to a `deploy-*.yml` job except for `destroy: true` — so destroy runs at the `.terraform-version` pin, runs `terraform validate`, and shares the deploy path's single OIDC auth step and apply gate rather than duplicating them.
 
-Both overall pipelines share the `homelab-terraform` concurrency group so a deploy and a destroy can never run at the same time.
+Both overall pipelines share the `homelab-terraform` concurrency group so a deploy and a destroy can never run at the same time. That group is workflow-level; each `_terraform.yml` job additionally takes the per-module `tf-<working_directory>` group, which is what actually leases the module's state blob — destroy included, as of #153.
 
 ### Lint gate
 
