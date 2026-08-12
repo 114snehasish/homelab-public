@@ -17,8 +17,8 @@ on:
         required: false
         type: string
         default: ''
-      use_oidc:
-        description: 'Authenticate as the federated UAMI instead of the client-secret SPs (E02.2 smoke test; becomes the default in E02.3/#35)'
+      suppress_plan_comment:
+        description: 'Skip the sticky PR plan comment (oidc-smoke.yml, so its plans do not clobber the deploy workflows'' comments)'
         required: false
         type: boolean
         default: false
@@ -26,8 +26,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  # Real as of E02.2 — oidc-smoke.yml calls this workflow with use_oidc: true
-  # and the job needs to mint an OIDC token to exchange for an Azure one.
+  # Load-bearing for every caller as of E02.3 (#35): Azure auth is OIDC-only,
+  # so a job that cannot mint an OIDC token cannot authenticate at all.
   id-token: write
 
 jobs:
@@ -70,13 +70,20 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v7
 
-      # ARM_* auth is set entirely via $GITHUB_ENV, not a static env:
-      # entry, so there's exactly one unambiguous source per run instead
-      # of a static value that a later override could silently lose to.
-      # network/storage/compute use the ARM_* secrets.
-      # E02.2 (#34): the keyless path, exercised today only by oidc-smoke.yml.
-      # ARM_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID come from repo *variables* —
-      # they are identifiers, not credentials (infra/identity/outputs.tf).
+      # E02.3 (#35): one keyless path for every module. This replaced a
+      # three-way fork — ARM_* secrets for network/storage/compute, AZURE_*
+      # secrets for dns/cloudflare, and this step behind a use_oidc flag —
+      # with a single identity, so there is no longer any per-module
+      # credential branching to keep straight.
+      #
+      # ARM_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID come from repo *variables*,
+      # not secrets: they are identifiers, not credentials
+      # (infra/identity/outputs.tf says the same thing at the source).
+      #
+      # Still written via $GITHUB_ENV rather than a static env: entry. The
+      # fork it used to disambiguate is gone, but the property is worth
+      # keeping — a static entry silently wins over a later $GITHUB_ENV
+      # write, so anything added here later would fail confusingly.
       #
       # ARM_USE_AZUREAD is load-bearing, not cosmetic: without it the azurerm
       # backend authenticates to blob storage by calling listKeys on the state
@@ -84,41 +91,12 @@ jobs:
       # account — only Storage Blob Data Contributor on the tfstate container.
       # Omit it and `terraform init` fails before validate ever runs.
       - name: Use OIDC federated credentials
-        if: inputs.use_oidc == true
         run: |
           echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
           echo "ARM_USE_AZUREAD=true" >> "$GITHUB_ENV"
           echo "ARM_CLIENT_ID=${{ vars.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
           echo "ARM_SUBSCRIPTION_ID=${{ vars.ARM_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
           echo "ARM_TENANT_ID=${{ vars.ARM_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      - name: Use ARM_* credentials
-        if: inputs.use_oidc != true && inputs.working_directory != 'infra/dns' && inputs.working_directory != 'infra/cloudflare'
-        run: |
-          echo "ARM_CLIENT_ID=${{ secrets.ARM_CLIENT_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_CLIENT_SECRET=${{ secrets.ARM_CLIENT_SECRET }}" >> "$GITHUB_ENV"
-          echo "ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_TENANT_ID=${{ secrets.ARM_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      # infra/dns and infra/cloudflare authenticate with the AZURE_*
-      # secrets instead (retiring that split is tracked separately,
-      # E02.4).
-      - name: Use AZURE_* credentials for dns/cloudflare
-        if: inputs.use_oidc != true && (inputs.working_directory == 'infra/dns' || inputs.working_directory == 'infra/cloudflare')
-        run: |
-          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}" >> "$GITHUB_ENV"
-          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
-          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
-
-      # infra/dns's rg_name variable collides by name with the rg_name
-      # variable declared (same "homelab-rg" default) by infra/network,
-      # infra/storage, and compute/vm. A static env: entry would silently
-      # override those three modules' defaults too, so this is scoped to
-      # infra/dns only, same pattern as above.
-      - name: Set rg_name for infra/dns
-        if: inputs.working_directory == 'infra/dns'
-        run: echo "TF_VAR_rg_name=${{ secrets.RESOURCE_GROUP_NAME }}" >> "$GITHUB_ENV"
 
       - name: Read pinned Terraform version
         id: tfversion
@@ -155,11 +133,13 @@ jobs:
       # Skipped for smoke runs: oidc-smoke.yml plans the same five modules a
       # PR's own deploy-*.yml runs already plan, and both would write the same
       # sticky `tf-plan: <dir>` comment and clobber each other. What the smoke
-      # run is asserting is auth, not the diff — pass/fail is the whole signal.
-      # E02.3 (#35): when OIDC becomes the only auth path, drop the use_oidc
-      # clause here or PR plan comments stop appearing entirely.
+      # run is asserting is RBAC, not the diff — pass/fail is the whole signal.
+      #
+      # This used to key off use_oidc, which worked only while OIDC and "is a
+      # smoke run" meant the same thing. E02.3 (#35) made every run an OIDC
+      # run, so the condition is now the explicit input it always meant.
       - name: Comment plan on PR
-        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request' && inputs.use_oidc != true"
+        if: "!cancelled() && steps.plan.outcome != 'skipped' && github.event_name == 'pull_request' && inputs.suppress_plan_comment != true"
         uses: actions/github-script@v9
         with:
           script: |

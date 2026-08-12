@@ -1,22 +1,24 @@
 name: OIDC Smoke Test
 
-# Proves the federated identity created in E02.1 (#33) and granted its roles in
-# E02.2 (#34) can actually do the work CI needs — before E02.3 (#35) makes OIDC
-# the only way in. Plan-only, always: there is no apply input and none of the
-# jobs can apply.
+# The standing regression test on the RBAC surface of the federated identity
+# created in E02.1 (#33) and granted its roles in E02.2 (#34). Plan-only,
+# always: there is no apply input and none of the jobs can apply.
 #
-# This workflow is permanent, not scaffolding for the cutover: it stays after
-# #35 and #36 land as the standing regression test on the RBAC surface. The
-# module jobs prove the grants are sufficient; the negative-access job proves
-# they are not excessive, and nothing else in the repo asserts that at all.
+# Its job changed with E02.3 (#35). Before the cutover it was the only proof
+# that OIDC worked at all; now every deploy run authenticates the same way, so
+# what is left here is the part nothing else covers:
+#   - the module jobs are the only Terraform signal on a PR touching just
+#     infra/identity/**, which no deploy-*.yml path filter matches;
+#   - the negative-access job proves the grants are not *excessive*, which no
+#     amount of green deploy runs can show.
 # Lifecycle notes — including why you must never trim a job to turn a red check
 # green — are in docs/oidc_bootstrap.md, step 5.
 #
-# The `pull_request` trigger is what makes this runnable before merge — a
+# No `push` trigger, for the same reason deploy-*.yml pin theirs to main: a
 # push-triggered run on a feature branch carries the OIDC subject
 # `repo:114snehasish/homelab:ref:refs/heads/<branch>`, which matches neither
-# federated credential, so it could only ever fail at auth (see the known gap
-# in docs/oidc_bootstrap.md). PR runs carry `:pull_request`, which matches.
+# federated credential, so it could only ever fail at auth. PR runs carry
+# `:pull_request`, which matches.
 
 on:
   workflow_dispatch:
@@ -46,7 +48,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/network
-      use_oidc: true
+      suppress_plan_comment: true
 
   dns:
     name: Plan dns (OIDC)
@@ -54,7 +56,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/dns
-      use_oidc: true
+      suppress_plan_comment: true
 
   cloudflare:
     name: Plan cloudflare (OIDC)
@@ -62,7 +64,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/cloudflare
-      use_oidc: true
+      suppress_plan_comment: true
 
   storage:
     name: Plan storage (OIDC)
@@ -70,7 +72,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/storage
-      use_oidc: true
+      suppress_plan_comment: true
 
   compute:
     name: Plan compute (OIDC)
@@ -78,7 +80,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: compute/vm
-      use_oidc: true
+      suppress_plan_comment: true
 
   # The other half of least privilege: proving what the identity *cannot* do.
   # Issue #34's second acceptance criterion, kept as a regression test — if a
