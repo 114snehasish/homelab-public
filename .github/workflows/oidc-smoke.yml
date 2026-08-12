@@ -5,9 +5,12 @@ name: OIDC Smoke Test
 # the only way in. Plan-only, always: there is no apply input and none of the
 # jobs can apply.
 #
-# It stays after #35 lands as a standing check on the RBAC surface: the modules
-# prove the grants are sufficient, the negative-access job proves they are not
-# excessive.
+# This workflow is permanent, not scaffolding for the cutover: it stays after
+# #35 and #36 land as the standing regression test on the RBAC surface. The
+# module jobs prove the grants are sufficient; the negative-access job proves
+# they are not excessive, and nothing else in the repo asserts that at all.
+# Lifecycle notes — including why you must never trim a job to turn a red check
+# green — are in docs/oidc_bootstrap.md, step 5.
 #
 # The `pull_request` trigger is what makes this runnable before merge — a
 # push-triggered run on a feature branch carries the OIDC subject

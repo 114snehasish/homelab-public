@@ -61,21 +61,56 @@ or User Access Administrator**, at each scope being granted. Contributor is not 
 much else it can do; this is the one permission Contributor pointedly excludes, so that a
 compromised Contributor cannot promote itself.
 
-If the SP in `.env` is only Contributor, you have two options: grant it User Access
-Administrator over the three scopes, or run the apply as yourself (`az login` with your own
-admin account, unset the `ARM_*` vars) — the resources are identical either way.
+**This lab's SP does not have it.** That is settled, not hypothetical — the first real apply of
+this module failed with a 403 on `roleAssignments/write`. So step 1 below defaults to applying
+as yourself. The alternative, granting the SP User Access Administrator over the three scopes,
+produces identical resources but widens a credential that E02.4 (#36) is about to retire — hard
+to justify for a one-time apply.
 
-Keep the output of that command: E02.4 (#36) needs an inventory of the old SP's
-subscription-level rights before it retires the credential, and #34's PR description is where
-it gets recorded.
+Keep the output of that command: #36 needs an inventory of the old SP's subscription-level
+rights before it retires the credential, and #34's PR description is where it gets recorded.
+"Cannot create role assignments" is now one confirmed entry in that inventory.
 
 ## Step 1 — apply locally
 
-```bash
-# Azure credentials come from the gitignored root .env (ARM_CLIENT_ID,
-# ARM_CLIENT_SECRET, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID)
-set -a; source .env; set +a
+This module is the one exception to the repo's usual "source `.env` and run Terraform" habit.
+Every other module is applied by the CI service principal; this one grants role assignments,
+which that principal cannot do. Pick a path before you start.
 
+### Path A — as yourself (the normal route)
+
+```bash
+az login
+az account set --subscription <subscription_id>
+
+# Load the subscription ID only — NOT the credentials.
+export ARM_SUBSCRIPTION_ID=<subscription_id>
+unset ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID
+```
+
+> **The `unset` is the load-bearing line.** `ARM_CLIENT_ID` + `ARM_CLIENT_SECRET` take
+> precedence over your `az login` session: with them set, the azurerm provider authenticates as
+> the service principal no matter who is logged into the CLI. If you have sourced `.env` in this
+> shell at any point, logging in as yourself changes nothing until you unset them — the apply
+> fails exactly as if you had never logged in. Either unset them, or use a fresh shell that
+> never sourced `.env`.
+
+`ARM_SUBSCRIPTION_ID` is safe to keep and is still required — it is an identifier, not a
+credential. Your account needs Owner or User Access Administrator over the three scopes in step
+4, plus the rights to create a resource group and a managed identity.
+
+### Path B — as the service principal
+
+Only after granting that SP User Access Administrator at the three scopes (see step 0b — by
+default it does **not** have it):
+
+```bash
+set -a; source .env; set +a
+```
+
+### Then, either way
+
+```bash
 cd infra/identity
 terraform init
 terraform plan     # from scratch: 7 to add, 0 to change, 0 to destroy
@@ -90,9 +125,20 @@ count, the plan must show **0 to change and 0 to destroy** — `listeninfratfsta
 `do-not-delete` and the SSH key are read through data sources and must never appear as managed
 resources.
 
-The service principal doing this apply needs rights to create a resource group and a managed
-identity at subscription scope — the same SP that already runs every module today — **plus** the
-role-assignment rights from step 0b, which it may well not have.
+### When it goes wrong
+
+The characteristic failure: `plan` succeeds, then `apply` dies on the first
+`azurerm_role_assignment` — having already created the RG, the UAMI and the federated
+credentials. The error carries a **403** with `Code="AuthorizationFailed"` and names the action
+`Microsoft.Authorization/roleAssignments/write` over one of the three scopes, attributed to the
+service principal's client ID rather than to you. (Exact wording varies with the provider
+version; those three markers are what identify it.)
+
+That is path B without the User Access Administrator grant — most often because the shell still
+carried `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET` from `.env`, so Terraform authenticated as the SP
+even though `az login` had been run as a human. Fix it by switching to path A (`az login`, then
+the `unset` above) and re-running `terraform apply`. The partial apply is not a problem:
+Terraform recorded what it created, and the re-run adds only the three role assignments.
 
 ## Step 2 — record the outputs
 
@@ -189,8 +235,25 @@ It needs the repo **variables** `ARM_CLIENT_ID`, `ARM_TENANT_ID` and `ARM_SUBSCR
 step 2 to exist. Set them before the first run: Settings → Secrets and variables → Actions →
 *Variables*. E02.3 (#35) reads the same three.
 
-If that command returns any role, something outside this module granted it; investigate before
-proceeding to #34.
+### Lifecycle: this workflow is permanent
+
+`oidc-smoke.yml` is not scaffolding for the E02 cutover, and nothing reverts it when the epic
+finishes. It is the standing regression test for the identity's RBAC surface, and the two halves
+age differently:
+
+- **The negative-access job has no substitute.** Every other check in the repo proves the
+  identity *can* do something; this is the only one that proves it *cannot*. Anything that
+  quietly widens the grants — a broadened scope, a role added out of band, a future module
+  reaching past `homelab-rg` — turns it red and nothing else would. Keep it whatever happens in
+  #35/#36.
+- **The five plan jobs get partly redundant after #35**, since the `deploy-*.yml` PR plans will
+  then exercise the same identity on the same modules. What they retain is being dispatchable on
+  demand: one button that answers "is CI's identity still healthy?" without needing a module to
+  have changed. Worth revisiting in #35 if smoke runs start costing real time; not before.
+
+One rule for anyone tempted to prune it: **never trim a job to turn a red check green.** A
+failing smoke plan means a prerequisite is genuinely missing — during E02.2 it correctly caught
+a data disk that had been deleted out of band, on both auth paths.
 
 ## Recovery / re-bootstrap
 
