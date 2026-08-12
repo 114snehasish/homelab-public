@@ -35,16 +35,23 @@ jobs:
     name: Terraform
     runs-on: ubuntu-latest
     concurrency:
-      # Smoke runs get their own group. Sharing tf-<dir> with the deploy
-      # workflows meant that any PR touching both — this one — left the smoke
-      # jobs as the superseded pending entry in each group, and GitHub keeps
-      # only one pending run per group: they were cancelled a second after
-      # starting, silently and with no output to explain it.
+      # One group per module, shared by deploy and smoke runs alike, because
+      # the thing being protected is the module's state blob and both kinds of
+      # run take a lease on it.
       #
-      # The cost of splitting is that a smoke plan can now overlap an apply of
-      # the same module and lose the state lock. That failure is loud, named,
-      # and re-runnable, which the cancellation was not.
-      group: tf-${{ inputs.working_directory }}${{ inputs.use_oidc && '-oidc-smoke' || '' }}
+      # This was briefly split into a separate tf-<dir>-oidc-smoke group to stop
+      # smoke jobs being cancelled when a deploy run queued for the same module.
+      # That traded a cosmetic problem for a real one: a PR touching the deploy
+      # workflows re-triggers all five of them on every push (pull_request path
+      # filters match the PR's whole diff, not just the newest commit), so the
+      # smoke jobs and the deploy jobs ran simultaneously and four deploy plans
+      # died on "state blob is already locked".
+      #
+      # Serialization is the correct trade. The cost is that when three runs
+      # queue for one module, GitHub keeps only one pending and cancels the
+      # middle one — noisy, but a cancelled plan breaks nothing, while a lock
+      # collision fails real work and could strand an apply mid-flight.
+      group: tf-${{ inputs.working_directory }}
       cancel-in-progress: false
     env:
       # Serves compute/vm's dns_zone_name/dns_rg_name (self-registered DNS
