@@ -224,7 +224,7 @@ CI: **`.github/workflows/oidc-smoke.yml`**, plan-only, with no apply path at all
 - It runs automatically on any PR touching `infra/identity/**`, `_terraform.yml`, or the smoke
   workflow itself. PR runs are what work pre-merge — their OIDC subject is
   `repo:114snehasish/homelab:pull_request`, which matches a federated credential, whereas a
-  feature-branch push run's subject matches neither (see the known gap below).
+  feature-branch push run's subject matches neither (see the branch-scoping section below).
 - It can also be dispatched manually, once the file is on `main`.
 - Five jobs plan the five modules as the UAMI; a sixth asserts what the identity *cannot* do —
   read RG `do-not-delete`, list the storage account keys, or see its own resource group — with
@@ -233,7 +233,8 @@ CI: **`.github/workflows/oidc-smoke.yml`**, plan-only, with no apply path at all
 
 It needs the repo **variables** `ARM_CLIENT_ID`, `ARM_TENANT_ID` and `ARM_SUBSCRIPTION_ID` from
 step 2 to exist. Set them before the first run: Settings → Secrets and variables → Actions →
-*Variables*. E02.3 (#35) reads the same three.
+*Variables*. Since E02.3 (#35) every workflow in the repo reads the same three — if they are
+wrong or missing, nothing that touches Azure can run, not just the smoke test.
 
 ### Lifecycle: this workflow is permanent
 
@@ -266,19 +267,29 @@ directly — but the repo variables are yours to update, or every workflow run f
 authentication. Re-run `oidc-smoke.yml` afterwards; that is exactly the regression it is there
 to catch.
 
+Since E02.3 (#35) this is a full CI outage, not a degraded mode: every Terraform workflow
+authenticates as this identity, so the window between recreating the UAMI and updating the repo
+variables is a window in which nothing deploys. Break-glass is unchanged — a local apply with
+the SP in `.env` — but it is now the *only* way to act on Azure during that window.
+
 Break-glass throughout E02: local applies keep working with the SP in `.env` regardless of the
 state of OIDC. That is the escape hatch behind roadmap risk **R8**.
 
-## Known gap to close in E02.3 (#35)
+## Branch scoping of the `push:` triggers (closed in E02.3, #35)
 
-The `deploy-*.yml` workflows trigger on `push:` with a path filter but **no branch filter**, so
-a push to any feature branch starts a plan run. The OIDC subject for such a run is
-`repo:114snehasish/homelab:ref:refs/heads/<branch>`, which matches neither federated credential.
+Only two subjects are trusted: `:ref:refs/heads/main` and `:pull_request`. A run's subject is
+`repo:114snehasish/homelab:ref:refs/heads/<branch>` on push, so **a push run on any branch
+other than `main` can only fail at auth.**
 
-Once #35 flips authentication to OIDC, those feature-branch push runs will fail at auth while
-the paired `pull_request` run for the same commit succeeds — confusing, but not dangerous.
+`deploy-*.yml` originally triggered on `push:` with a path filter and no branch filter, which
+was harmless while CI used a client secret and would have failed every feature-branch push once
+OIDC became the only path. #35 closed it by adding `branches: [main]` to all five `push:`
+triggers; `pull_request` runs, whose subject matches, are what give a feature branch its plan.
+`oidc-smoke.yml` has no `push:` trigger at all, for the same reason.
 
-The fix belongs in #35, not here: add `branches: [main]` to the `push:` triggers, since
-`pull_request` runs already cover feature branches. Adding a wildcard federated credential is
-the wrong answer — it would trust every branch in the repo, including one an attacker could
-push.
+Keep it that way. A wildcard federated credential is the wrong fix — it would trust every
+branch in the repo, including one an attacker with push access could create.
+
+The same rule governs `workflow_dispatch`, which inherits the ref it is dispatched from: run
+`deploy.yml`, `destroy.yml` and manual applies **from `main`**. Dispatching from a branch fails
+at auth. This is also why a gated apply cannot be proven on a PR — it has to happen after merge.
