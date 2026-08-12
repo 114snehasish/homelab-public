@@ -1,0 +1,130 @@
+name: OIDC Smoke Test
+
+# Proves the federated identity created in E02.1 (#33) and granted its roles in
+# E02.2 (#34) can actually do the work CI needs — before E02.3 (#35) makes OIDC
+# the only way in. Plan-only, always: there is no apply input and none of the
+# jobs can apply.
+#
+# This workflow is permanent, not scaffolding for the cutover: it stays after
+# #35 and #36 land as the standing regression test on the RBAC surface. The
+# module jobs prove the grants are sufficient; the negative-access job proves
+# they are not excessive, and nothing else in the repo asserts that at all.
+# Lifecycle notes — including why you must never trim a job to turn a red check
+# green — are in docs/oidc_bootstrap.md, step 5.
+#
+# The `pull_request` trigger is what makes this runnable before merge — a
+# push-triggered run on a feature branch carries the OIDC subject
+# `repo:114snehasish/homelab:ref:refs/heads/<branch>`, which matches neither
+# federated credential, so it could only ever fail at auth (see the known gap
+# in docs/oidc_bootstrap.md). PR runs carry `:pull_request`, which matches.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'infra/identity/**'
+      - '.github/workflows/oidc-smoke.yml'
+      - '.github/workflows/_terraform.yml'
+
+# A called workflow cannot request more than its caller grants, so every caller
+# of _terraform.yml has to cover everything _terraform.yml declares — including
+# the pull-requests: write it needs for sticky plan comments, even though smoke
+# runs skip that step. Get this wrong and the run dies at startup with no jobs.
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+# Deliberately not chained with `needs:`. deploy.yml orders the modules because
+# it can apply; these are read-only plans against infrastructure that already
+# exists, and a smoke test is most useful when one broken scope does not hide
+# the state of the other four.
+jobs:
+  network:
+    name: Plan network (OIDC)
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/network
+      use_oidc: true
+
+  dns:
+    name: Plan dns (OIDC)
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/dns
+      use_oidc: true
+
+  cloudflare:
+    name: Plan cloudflare (OIDC)
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/cloudflare
+      use_oidc: true
+
+  storage:
+    name: Plan storage (OIDC)
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: infra/storage
+      use_oidc: true
+
+  compute:
+    name: Plan compute (OIDC)
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: compute/vm
+      use_oidc: true
+
+  # The other half of least privilege: proving what the identity *cannot* do.
+  # Issue #34's second acceptance criterion, kept as a regression test — if a
+  # future change widens the identity's scope, this job goes red.
+  negative-access:
+    name: Assert out-of-scope access fails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      # Positive control first: without it, a broken login would make every
+      # assertion below "pass" for entirely the wrong reason.
+      - name: Control — homelab-rg IS readable
+        run: az group show -n homelab-rg -o none
+
+      - name: Assert do-not-delete RG is NOT readable
+        run: |
+          if az group show -n do-not-delete -o none 2>/dev/null; then
+            echo "::error::UAMI can read RG do-not-delete — scope is wider than #34 intends"
+            exit 1
+          fi
+          echo "OK: RG do-not-delete is not readable (Reader is scoped to the SSH key alone)"
+
+      - name: Assert state storage account keys are NOT listable
+        run: |
+          if az storage account keys list \
+               -n listeninfratfstatesa -g do-not-delete -o none 2>/dev/null; then
+            echo "::error::UAMI can list state storage account keys — that key is a bearer credential for every container in the account"
+            exit 1
+          fi
+          echo "OK: listKeys denied; state access is data-plane only, on the tfstate container"
+
+      # Read is the cheap, non-destructive proxy for "cannot touch itself" — a
+      # principal with no read over homelab-identity-rg has no write either.
+      # Probing with an actual write would mean issuing the destructive command
+      # this whole design exists to make impossible, and it would succeed on
+      # exactly the day the scoping regressed.
+      - name: Assert the identity's own resource group is out of reach
+        run: |
+          if az group show -n homelab-identity-rg -o none 2>/dev/null; then
+            echo "::error::UAMI can read its own resource group — homelab-identity-rg must stay outside its blast radius"
+            exit 1
+          fi
+          echo "OK: the identity has no rights over the RG that holds it"

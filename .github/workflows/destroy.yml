@@ -22,6 +22,9 @@ on:
 permissions:
   id-token: write
   contents: read
+  # The deploy-*.yml workflows this calls declare pull-requests: write
+  # (plan comments); a caller must cover everything its callee declares.
+  pull-requests: write
 
 concurrency:
   group: homelab-terraform
