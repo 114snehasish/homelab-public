@@ -54,9 +54,14 @@ jobs:
       group: tf-${{ inputs.working_directory }}
       cancel-in-progress: false
     env:
-      # Serves compute/vm's dns_zone_name/dns_rg_name (self-registered DNS
-      # A-record); infra/dns's own dns_zone_name variable happens to share
-      # the first name too. Do not remove.
+      # Shared by compute/vm (self-registered DNS A-record) and infra/dns, which
+      # declare these variables with the same names and the same meaning. Safe as
+      # static env for exactly that reason — no other module declares either name,
+      # so nothing else can be overridden by accident. Do not remove.
+      #
+      # infra/dns reached TF_VAR_dns_rg_name by renaming its `rg_name` variable;
+      # under the old name it collided with infra/network/storage/compute and
+      # needed an if:-gated step here instead. See infra/dns/variables.tf.
       TF_VAR_dns_zone_name: ${{ secrets.DNS_ZONE_NAME }}
       TF_VAR_dns_rg_name: ${{ secrets.RESOURCE_GROUP_NAME }}
       # infra/cloudflare-only variable names; safe as static env since they

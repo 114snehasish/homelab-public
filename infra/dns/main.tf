@@ -14,7 +14,7 @@ provider "azurerm" {
 }
 
 data "azurerm_resource_group" "dns_rg" {
-  name = var.rg_name
+  name = var.dns_rg_name
 }
 
 resource "azurerm_dns_zone" "homelab" {
