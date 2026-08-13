@@ -7,7 +7,8 @@ output "location" {
 }
 
 output "subnet_id" {
-  value = azurerm_subnet.homelab_subnet.id
+  description = "Subnet IDs keyed by subnet name. A map since #161 — nothing consumes it (compute/vm resolves the subnet by name via a data source, and no module uses terraform_remote_state)."
+  value       = { for name, subnet in azurerm_subnet.homelab_subnets : name => subnet.id }
 }
 
 output "nsg_id" {

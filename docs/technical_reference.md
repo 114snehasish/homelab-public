@@ -29,9 +29,19 @@ As I expand the lab, new modules will be added, but these core components provid
 
 ### Resources
 - `azurerm_resource_group.homelab_rg`: The logistical container for my resources.
-- `azurerm_virtual_network.homelab_vnet`: The address space (10.0.0.0/16) reserved for the lab.
-- `azurerm_subnet.homelab_subnet`: The initial subnet for compute nodes.
+- `azurerm_virtual_network.homelab_vnet`: The address space (`var.vnet_address_space`, default 10.0.0.0/16) reserved for the lab.
+- `azurerm_subnet.homelab_subnets`: One subnet per entry in `var.subnets`, keyed by subnet name. Today that map holds exactly one entry — `homelab-subnet` = 10.0.0.0/24, the public tier.
 - `azurerm_network_security_group.homelab_nsg`: The security boundary.
+- `azurerm_network_security_rule.homelab_nsg_rules`: One rule per entry in `var.nsg_rules`, keyed by rule name. Today: `Allow-SSH` at priority 100.
+- `azurerm_subnet_network_security_group_association.homelab_nsg_assocs`: One per subnet — the NSG is owned at the subnet layer, per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md).
+
+### Adding a subnet or a rule
+Both are **map entries, not resource blocks** (#161). A subnet needs a name and
+`address_prefixes` taken from ADR-0012's CIDR plan; a rule needs an explicit `priority`
+— `for_each` iteration order must never be what decides one. A rule that omits
+`source_address_prefix` inherits the SSH whitelist default: `var.ssh_source_ip` if set,
+otherwise the public IP of whichever machine is running the plan (fetched live from
+api.ipify.org), which is why local and CI plans always disagree on that one value.
 
 ---
 
