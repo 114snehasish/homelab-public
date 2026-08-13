@@ -61,14 +61,46 @@ api.ipify.org), which is why local and CI plans always disagree on that one valu
 **Purpose**: The current execution environment. I designed this module to be highly disposable and replaceable.
 
 ### Resources
-- `azurerm_linux_virtual_machine.homelab_vm`: The current Ubuntu host.
-- `azurerm_virtual_machine_data_disk_attachment`: The dynamic link between the disposable VM and the persistent storage.
+Every name this module *produces* derives from `var.instance_name` (default `homelab-vm`), so
+the module is no longer welded to one node (#162):
+
+- `azurerm_linux_virtual_machine.homelab_vm`: the Ubuntu host — named `${instance_name}`.
+- `azurerm_network_interface.vm_nic`: `${instance_name}-nic`.
+- `azurerm_public_ip.vm_public_ip`: `${instance_name}-public-ip`.
+- ↳ `os_disk`: `${instance_name}-osdisk`.
+- `azurerm_dns_a_record.vm_record`: the A record the VM registers for itself, labelled `${instance_name}`.
+- `azurerm_virtual_machine_data_disk_attachment`: The dynamic link between the disposable VM
+  and the persistent storage, at `var.data_disk_lun` (default 10).
+
+**No NSG association lives here.** Per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md)
+the subnet is the single owner of NSG policy; the NIC-level association this module used to
+create was removed in #162. Rules are a property of the tier a node sits in, so they are
+edited in `infra/network`'s `var.nsg_rules`.
+
+**Outputs are scalars, not maps.** `public_ip` and `ssh_command` describe one node. They become
+maps keyed by instance name in E17.6/E17.7 ([#165](https://github.com/114snehasish/homelab/issues/165)/[#166](https://github.com/114snehasish/homelab/issues/166)).
+
+### Adding a second instance
+Not yet possible from this module alone, and deliberately so. `instance_name` makes the *names*
+per-instance, but the module still has one state file and one backend key, so planning with a
+different `instance_name` **replaces** the existing node rather than adding one. A real second
+node needs [#163](https://github.com/114snehasish/homelab/issues/163) (per-instance state key
+in `_terraform.yml`), [#165](https://github.com/114snehasish/homelab/issues/165) (a managed disk
+cannot attach to two VMs) and [#166](https://github.com/114snehasish/homelab/issues/166) — and
+has to pass ADR-0012's "earns its own VM" test first.
 
 ### Automation (`cloud-init.yaml`)
 The bootstrapping script is designed to:
-1.  Detect the persistent storage at **LUN 10**.
+1.  Detect the persistent storage at **LUN 10** (`var.data_disk_lun` and this file are a
+    coupled pair — the LUN path `/dev/disk/azure/scsi1/lun10` is hardcoded in the script, so
+    changing the variable alone breaks the mount).
 2.  Safely mount it to `/data` (avoiding destructive formatting).
 3.  Initialize the container runtime.
+
+It is read with `filebase64(var.cloud_init_file)` and **not** `templatefile()`: the script's
+`PARTITION="${DISK}1"` is a *shell* expansion, which `templatefile()` would try to interpolate
+as Terraform (it would need escaping as `$${DISK}1`). The rewrite that revisits this is
+[#99](https://github.com/114snehasish/homelab/issues/99).
 
 ---
 

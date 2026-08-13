@@ -194,4 +194,4 @@ Two things are already known and are recorded here so the measurement is not mis
 
 - [ ] Fill section 5 with measured numbers after [#164](https://github.com/114snehasish/homelab/issues/164) and [#169](https://github.com/114snehasish/homelab/issues/169) (then flip Status to plain *Accepted*).
 - [ ] Answer the default-outbound question during [#164](https://github.com/114snehasish/homelab/issues/164).
-- [ ] Remove the NIC-level NSG association in [#162](https://github.com/114snehasish/homelab/issues/162).
+- [x] Remove the NIC-level NSG association in [#162](https://github.com/114snehasish/homelab/issues/162). *Done — `compute/vm` no longer creates one; the subnet association in `infra/network` is the only owner.*
