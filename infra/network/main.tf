@@ -85,22 +85,3 @@ resource "azurerm_subnet_network_security_group_association" "homelab_nsg_assocs
   subnet_id                 = azurerm_subnet.homelab_subnets[each.key].id
   network_security_group_id = azurerm_network_security_group.homelab_nsg.id
 }
-
-# for_each conversion is an address change, which Terraform plans as
-# destroy+create without these. infra/network has no prevent_destroy to catch a
-# mistake, and destroying the subnet cascades into the VM's NIC — the
-# zero-change plan is the only guard. Precedent: infra/cloudflare/main.tf.
-moved {
-  from = azurerm_subnet.homelab_subnet
-  to   = azurerm_subnet.homelab_subnets["homelab-subnet"]
-}
-
-moved {
-  from = azurerm_network_security_rule.allow_ssh
-  to   = azurerm_network_security_rule.homelab_nsg_rules["Allow-SSH"]
-}
-
-moved {
-  from = azurerm_subnet_network_security_group_association.homelab_nsg_assoc
-  to   = azurerm_subnet_network_security_group_association.homelab_nsg_assocs["homelab-subnet"]
-}
