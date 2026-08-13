@@ -30,6 +30,12 @@ I have put comprehensive documentation under the `docs/` directory to help you u
   The one module I apply by hand: the managed identity my pipelines authenticate as, so no
   Azure password ever lives in GitHub.
 
+- **[🧭 Architecture Decision Records](docs/adr/)**  
+  The decisions that constrain later work, and why — one file per decision, numbered.
+  Start with [ADR-0012](docs/adr/0012-workload-tiering-cidr-and-nsg-ownership.md): the
+  CIDR allocation for the VNet, who owns the NSG, and the test a workload has to pass
+  before it earns its own VM.
+
 ## 🚀 Quick Start (The Base Layer)
 
 ### Prerequisites
