@@ -31,7 +31,7 @@ Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner
 | License | **MIT** | The public mirror currently publishes unlicensed code. |
 | Persistence | **Managed disk (own RG) + restic → Blob Cool** | Block storage is the only safe home for live SQLite/Postgres; restic gives encrypted, deduplicated, versioned logical backups independent of any disk. Azure Files rejected for databases (SMB locking/corruption). |
 
-## The 13 epics
+## The epics
 
 | Epic | Title | Pillar | Week | Tier |
 |---|---|---|---|---|
@@ -51,6 +51,7 @@ Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner
 | [#88](https://github.com/114snehasish/homelab/issues/88) | E14 Ephemeral Claude Code agent runners on k3s | apps/platform | month 2 | Month-2 opener |
 | [#96](https://github.com/114snehasish/homelab/issues/96) | E15 Persistent storage layer v2 + park/resume lifecycle | resilience/platform | 1–2 | **Core — exempt from the cut order** |
 | [#105](https://github.com/114snehasish/homelab/issues/105) | E16 GCP landing zone — multi-cloud replica | apps/platform | month 2 / parallel | Month-2 track (`cloud:gcp`) |
+| [#159](https://github.com/114snehasish/homelab/issues/159) | E17 Multi-instance compute & network topology v2 | governance/platform | **Phase 1** weeks 1–2 · **Phase 2** month 2 | Core (Phase 1) / Month-2 (Phase 2) |
 
 ## Dependency graph
 
@@ -76,6 +77,12 @@ graph LR
   E15 --> E03
   E15 --> E07
   E01 --> E16[#105 GCP landing zone]
+  E01 --> E17a[#159 E17 Phase 1 multi-instance refactor]
+  E17a --> E03
+  E06 --> E17b[#159 E17 Phase 2 topology and second node]
+  E07 --> E17b
+  E09 --> E17b
+  E15 --> E17b
   E10[#23 Cost governance]
   E12[#25 Docs and ADRs]
 ```
@@ -89,6 +96,9 @@ Sequencing rules that are **not optional**:
 - **Pre-op snapshot (#59) before every VM-recreating apply.**
 - **E15's disk migration + mount contract land before E03.3** — Caddy is the first thing to write real state to `/data`; moving a near-empty disk to the persist RG is trivial, moving a live one is surgery.
 - **Park = final restic backup → destroy `compute/vm` only.** Network RG, DNS zone, Key Vault, and the persist RG stay up (all near-free). Resume = apply `compute/vm` → mount guard verifies the disk → apps pick up where they left off, certs included (no ACME re-issuance).
+- **E17.2 (#161) lands before E03.1 (#37)** — #37 is the first NSG edit since the NSG was written. Against a rules map it is two entries; against singletons it is two more `azurerm_network_security_rule` blocks with hand-picked priorities, refactored away later anyway.
+- **E17 Phase 2 is hard-gated on E06.4 (#54).** A private subnet built before Tailscale needs a bastion host to reach it; built after, the tailnet *is* the access path. This is the whole reason Phase 2 sits in month 2.
+- **ADR-0012 (#160) lands before #38, #39 and #99 are built**, or those three bake in single-VM assumptions that get torn up: #38 points the wildcard at one VM's public IP, #39 fixes Caddy as the single edge, and #99 rewrites the mount contract (which must come out parameterized for N disks, or E17.6 rewrites it a second time).
 
 ## Risk register
 
@@ -111,10 +121,15 @@ Sequencing rules that are **not optional**:
 | R15 | GCP credit exhaustion/expiry mid-cycle | Billing budget alarm at the credit ceiling (#107); parkability is the backstop |
 | R16 | GCP zonal disk vs VM zone mismatch (attach failure) | One shared `zone` variable across `gcp/storage` and `gcp/vm` (#111/#112) |
 | R17 | Provider bumps merge unverified — Dependabot runs get no secrets, so every `Deploy *` check dies at `terraform init` and the bump itself is never plan-tested | [#138](https://github.com/114snehasish/homelab/issues/138) (E01.8) mirrors the secrets into the Dependabot store; interim workaround is a maintainer push to the PR branch, which re-runs CI with real secrets (used for the azurerm 4→5 bumps #143–#147) |
+| R18 | `for_each` conversion churns the pet disk's state address (destroy+create instead of a rename) | `moved` blocks land in the same change as every conversion; `prevent_destroy` on the disk turns a bad move into a **plan error rather than a deletion**; every E17 Phase-1 PR must show a zero-change plan ([#161](https://github.com/114snehasish/homelab/issues/161), [#165](https://github.com/114snehasish/homelab/issues/165)). Note `infra/network` has **no** `prevent_destroy` to catch the same mistake — reading the plan is the only guard there |
+| R19 | Private-subnet egress (NAT Gateway ≈ $30–35/mo) blows E15's ≤ ₹400/mo parked target on its own | [#164](https://github.com/114snehasish/homelab/issues/164) settles the egress option *and* its parked posture together — destroy-on-park, or tailnet-only egress. Parked cost is an acceptance criterion, measured not estimated |
+| R20 | Fleet-wide blast radius: all compute instances share one state file (deliberate — a directory per instance needs a new backend key, workflow, path filter and concurrency group each) | Manual apply gate stays; per-instance concurrency groups and PR-comment markers ([#163](https://github.com/114snehasish/homelab/issues/163)) so instances cannot race; `.claude/skills/verify-persistence/SKILL.md`'s module-wide `destroy` becomes instance-scoped in [#166](https://github.com/114snehasish/homelab/issues/166) |
 
 ## Capacity honesty & cut order
 
 Full scope is **13 epics / 60 PRs ≈ 90–120 hours** — more than a typical solo evenings-and-weekends month (50–70 h). Core = E01–E03, E05–E09 (+ E12.1/.2) ≈ 42 PRs, still ambitious. **E15 adds ~7 PRs (~12–18 h) in weeks 1–2 and is exempt from the cut order** — persistence is the philosophy of the lab, and everything after it stands on it; if time is short, cut deeper into the flex epics instead.
+
+**E17 Phase 1 adds ~4 PRs (~6–10 h) in weeks 1–2 and is in the cut order at position 0** — it is a pure refactor that creates nothing and costs nothing to run, so cutting it costs only the compounding interest of leaving single-VM assumptions in place. Cut it if week 2 is at risk, but cut #161 *last*: it is the one whose cost genuinely rises if #37 lands first. **E17 Phase 2 is month-2 work and is not in the month-1 budget at all.**
 
 **Week-2 checkpoint question:** *"Are HTTPS apps live and OIDC done?"* If no — cut before adding, in this order:
 
@@ -154,6 +169,29 @@ A faithful replica of the **current** Azure stack on GCP, inside the owner's **e
 Children: [#106](https://github.com/114snehasish/homelab/issues/106) ADR-0011 · [#107](https://github.com/114snehasish/homelab/issues/107) bootstrap (APIs, SA+WIF, state bucket, credit budget) · [#108](https://github.com/114snehasish/homelab/issues/108) network · [#109](https://github.com/114snehasish/homelab/issues/109) dns · [#110](https://github.com/114snehasish/homelab/issues/110) cloudflare delegation · [#111](https://github.com/114snehasish/homelab/issues/111) storage · [#112](https://github.com/114snehasish/homelab/issues/112) vm · [#113](https://github.com/114snehasish/homelab/issues/113) CI workflows · [#114](https://github.com/114snehasish/homelab/issues/114) persistence drill + docs + credit-burn report.
 
 E16.1–E16.7 are independent of the Azure roadmap (pick up anytime as GCP learning); E16.8 prefers E01.3/.4's reusable workflow. Posture: park/resume parity — the GCP side is built parkable, and E15's lifecycle workflows gain a GCP leg in a later extension.
+
+## Multi-instance — E17: compute fleet & network topology v2 ([#159](https://github.com/114snehasish/homelab/issues/159), added 2026-08-13)
+
+Every module here builds **exactly one of each resource**. `compute/vm` parameterizes every name it *consumes* (`subnet_name`, `disk_name`, `nsg_name`, `dns_zone_name`) and **zero** names it *produces* — `homelab-vm`, `-nic`, `-public-ip`, `-osdisk` and the DNS A-record label are literals, and there is no `vm_name` variable. `infra/network` hardcodes `10.0.0.0/16` and one `10.0.0.0/24` with no CIDR variables and no `cidrsubnet()`. The whole repo holds one `for_each` (`infra/cloudflare`) and zero `count`/`matrix`. E17 makes multiplicity possible and builds a real multi-tier network.
+
+**What E17 is not: one VM per app.** `Standard_B4ms` was picked precisely to *"fit compose apps + monitoring + k3s on one box"*, and **E09 is the workload-isolation story** — namespaces, resource limits, NetworkPolicy. Building VM-per-workload before k3s means building isolation twice. So the **default fleet stays at one node**; extra nodes are opt-in map entries that must pass the "earns its own VM" test in ADR-0012. The drivers are **topology learning, blast-radius isolation and per-workload park granularity** — explicitly *not* resource contention.
+
+**CIDR plan** (fixed in ADR-0012 before any subnet is added; must not overlap GCP's `10.1.0.0/24`):
+
+| Tier | CIDR | Holds |
+|---|---|---|
+| public | `10.0.0.0/24` | today's subnet — internet-facing edge (Caddy), unchanged |
+| private | `10.0.1.0/24` | workload nodes with no public IP, reached over the tailnet |
+| data | `10.0.2.0/24` | reserved — databases, if they ever leave the app node |
+| reserved | `10.0.3.0/24`+ | future (AKS node pool, k3s agents) |
+
+**Phase 1 — refactor, weeks 1–2, ~4 PRs.** `moved` blocks plus defaults that reproduce today's names: **zero new Azure resources, zero cost, a zero-change plan.** Front-loaded because #37 is the first NSG edit since the NSG was written, and every app deployed afterwards bakes in more single-VM assumptions. **E17.1** [#160](https://github.com/114snehasish/homelab/issues/160) ADR-0012 (CIDR plan, NSG ownership → subnet, the "earns its own VM" test, known expiries) · **E17.2** [#161](https://github.com/114snehasish/homelab/issues/161) subnets and NSG rules as maps · **E17.3** [#162](https://github.com/114snehasish/homelab/issues/162) `instance_name` threaded through every produced name · **E17.4** [#163](https://github.com/114snehasish/homelab/issues/163) `_terraform.yml` gains `state_key` + `var_file`, `compute/vm` moves to partial backend config.
+
+E17.4 is the one that unpicks a genuine knot: in `_terraform.yml`, `working_directory` is simultaneously the checkout path, the state identity, the concurrency-lock identity **and** the PR-comment marker. Two instances of one module cannot plan until those are separated — the second dies on a locked state blob, and their sticky plan comments overwrite each other. Container-scoped RBAC on `tfstate` means new state keys need no identity change.
+
+**Phase 2 — topology and the second node, month 2, ~5 PRs.** **E17.5** [#164](https://github.com/114snehasish/homelab/issues/164) private tier + egress decision (**R19**) · **E17.6** [#165](https://github.com/114snehasish/homelab/issues/165) per-instance disks + LUN map (**R18** — a managed disk cannot attach to two VMs, so `infra/storage` multiplies in lockstep) · **E17.7** [#166](https://github.com/114snehasish/homelab/issues/166) the second node · **E17.8** [#167](https://github.com/114snehasish/homelab/issues/167) per-instance park/resume · **E17.9** [#168](https://github.com/114snehasish/homelab/issues/168) diagram, measured cost delta, fleet-wide drill.
+
+**#166 is a decision gate, not just a build.** It does not start until E09 has landed and been used. If k3s namespaces already deliver the isolation, the honest outcome is a **k3s agent node** joining the existing cluster rather than a bespoke second pet VM — both outcomes close the issue legitimately; silently building the pet VM because it was the original idea does not.
 
 ## Working agreement
 
