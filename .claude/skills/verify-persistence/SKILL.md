@@ -22,6 +22,10 @@ Prerequisites: `infra/network`, `infra/storage`, and `compute/vm` are applied; A
    terraform -chdir=compute/vm destroy -auto-approve
    ```
    Never touch `infra/storage` (its disk has `prevent_destroy`) or any other module.
+
+   **This destroys the whole module, not one node.** Harmless while the fleet is one node,
+   which it is today — but the moment `compute/vm` holds more than one instance this becomes
+   a fleet-wide destroy. Fixed in E17.7 (#166), which is when it first bites.
 4. **Recreate**: `terraform -chdir=compute/vm apply -auto-approve`. Wait for cloud-init to finish (it remounts the existing disk at /data without formatting — check `/var/log/disk-setup.log` if unsure).
 5. **Verify survival** on the new VM (fresh Docker engine, so `docker ps -a` being empty is expected):
    ```bash

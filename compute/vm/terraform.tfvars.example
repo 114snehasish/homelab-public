@@ -1,2 +1,7 @@
 dns_zone_name = "az.snehasish-chakraborty.com"
 dns_rg_name   = "homelab-rg"
+
+# Names every resource this module creates (NIC, public IP, OS disk, DNS
+# A-record label). Leave it commented: the variable default is the deployed
+# node, and setting it here would rename — and so replace — that node.
+# instance_name = "homelab-vm"
