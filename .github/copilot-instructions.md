@@ -7,7 +7,9 @@ application code, no unit tests, no Makefile. Deeper background lives in `CLAUDE
 ## Layout
 
 Six **independent root modules**, each with its own remote state (backend
-`listeninfratfstatesa`, container `tfstate`, key `homelab.<module>.tfstate`):
+`listeninfratfstatesa`, container `tfstate`, key `homelab.<module>.tfstate` — except
+`compute/vm`, whose key is supplied at `init` time so one directory can serve several
+instances; see below):
 
 `infra/identity` · `infra/network` · `infra/dns` · `infra/cloudflare` · `infra/storage` · `compute/vm`
 
@@ -25,6 +27,10 @@ terraform -chdir=<module> init -input=false
 terraform -chdir=<module> validate
 terraform -chdir=<module> plan -input=false        # this is also how you "plan a single module"
 ```
+
+- **`compute/vm` needs its backend key on `init`** (partial backend config, E17.4 #163):
+  `terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"`,
+  plus `-reconfigure` when switching instances in one checkout. A bare `init` there fails.
 
 - `.claude/skills/tf-plan/` wraps this pre-flight for one module or `all` (dependency order).
   A post-edit hook already runs `terraform fmt` on saved `.tf`/`.tfvars` files.

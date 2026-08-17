@@ -80,14 +80,31 @@ edited in `infra/network`'s `var.nsg_rules`.
 **Outputs are scalars, not maps.** `public_ip` and `ssh_command` describe one node. They become
 maps keyed by instance name in E17.6/E17.7 ([#165](https://github.com/114snehasish/homelab/issues/165)/[#166](https://github.com/114snehasish/homelab/issues/166)).
 
+### State: partial backend config
+Alone among the six modules, `compute/vm/backend.tf` carries **no `key`**. The state blob is
+selected at `init` time (E17.4, [#163](https://github.com/114snehasish/homelab/issues/163)) so
+one module directory can serve several instances, each with its own state:
+
+```bash
+terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"
+```
+
+CI passes the same value as `_terraform.yml`'s `state_key` input. Locally, add `-reconfigure`
+when switching instances inside one checkout, or Terraform reuses the cached backend and you
+plan the wrong one. Keeping a literal `key` here *as well* was rejected: the file would carry a
+lie, and a bare `init` would silently target instance zero.
+
 ### Adding a second instance
-Not yet possible from this module alone, and deliberately so. `instance_name` makes the *names*
-per-instance, but the module still has one state file and one backend key, so planning with a
-different `instance_name` **replaces** the existing node rather than adding one. A real second
-node needs [#163](https://github.com/114snehasish/homelab/issues/163) (per-instance state key
-in `_terraform.yml`), [#165](https://github.com/114snehasish/homelab/issues/165) (a managed disk
-cannot attach to two VMs) and [#166](https://github.com/114snehasish/homelab/issues/166) — and
-has to pass ADR-0012's "earns its own VM" test first.
+The CI half is done: a second instance is a matrix entry in `deploy-compute.yml` (its own
+`state_key`, its own `instances/<name>.tfvars` — see `compute/vm/instances/README.md`), and
+`_terraform.yml` keys the state blob, the concurrency group and the sticky PR comment off that
+`state_key`, so two instances plan concurrently without colliding.
+
+What is still missing is on the Terraform side: a managed disk cannot attach to two VMs
+([#165](https://github.com/114snehasish/homelab/issues/165)), and this module's scalar outputs
+plus the fleet-wide `destroy` in `.claude/skills/verify-persistence/` have to become
+per-instance ([#166](https://github.com/114snehasish/homelab/issues/166)). A second node also
+has to pass ADR-0012's "earns its own VM" test first — the default fleet stays at one.
 
 ### Automation (`cloud-init.yaml`)
 The bootstrapping script is designed to:
@@ -193,11 +210,40 @@ are thin wrappers: their `jobs:` block only declares triggers/inputs, then
 delegates the actual init → validate → plan → dispatch-gated apply sequence
 to **`_terraform.yml`**, a `workflow_call`-only reusable workflow
 parameterized by `working_directory` (module path), `apply`, an
-optional `ssh_source_ip` (network only), and `destroy` (`destroy.yml`
-only — see below). `_terraform.yml` pins the
+optional `ssh_source_ip` (network only), `destroy` (`destroy.yml`
+only — see below), and — since E17.4
+([#163](https://github.com/114snehasish/homelab/issues/163)) —
+`state_key` and `var_file`. `_terraform.yml` pins the
 Terraform CLI version from the repo-root `.terraform-version` file and
-runs its job under a `tf-<working_directory>` concurrency group, so two
-runs touching the same module's state queue instead of racing.
+runs its job under a `tf-<state_key or working_directory>` concurrency
+group, so two runs touching the same **state blob** queue instead of racing.
+
+`working_directory` used to be four identities at once — the checkout path,
+the state identity, the lock identity and the PR-comment identity — which is
+why no module could be planned twice. E17.4 split them:
+
+- **`state_key`** (default empty) becomes `terraform init
+  -backend-config="key=…"`. Empty means the module hardcodes its key in
+  `backend.tf` and `init` runs bare, which is still true of all five modules
+  except `compute/vm`.
+- The **concurrency group** now derives from the state key when there is one,
+  because the blob lease is the thing actually being protected. A module that
+  passes no `state_key` keeps exactly the group it had before.
+- The **sticky PR comment** is keyed by the same identity. Keyed by directory
+  alone, two legs of one module found each other's comment through
+  `includes(marker)` and raced to overwrite it.
+- **`var_file`** appends `-var-file=…` to the plan (resolved relative to
+  `working_directory`). It outranks the job-level `TF_VAR_*` `env:` block, so
+  one instance can override a repo-wide value.
+
+`deploy-compute.yml` is the only caller that fans out: its `uses:` job carries
+a `strategy: matrix` with one entry per instance (one today, deliberately),
+each supplying `name`, `state_key` and `var_file`. `deploy.yml →
+deploy-compute.yml → _terraform.yml` is 3 of GitHub's 4 workflow-nesting
+levels, so the matrix fits at this level and an extra wrapper workflow would
+not. `destroy.yml`'s compute job passes the same `state_key` — it must, or a
+destroy and a deploy of one node could run at once — and stays a single leg
+until #166 adds a second instance.
 
 All five also list `.github/workflows/_terraform.yml` in their `push` and
 `pull_request` path filters (#153): without it, a PR that changed only the

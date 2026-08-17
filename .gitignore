@@ -2,6 +2,10 @@
 keys/
 .env
 *.tfvars
+# ...except committed per-instance variable files for compute/vm (E17.4, #163),
+# which _terraform.yml consumes as -var-file. Non-secret values only: main is
+# force-mirrored to a public repo.
+!compute/vm/instances/*.tfvars
 *.tfstate
 *.tfstate.*
 .terraform/

@@ -29,6 +29,9 @@ export ARM_SUBSCRIPTION_ID=<subscription_id>
 
 - `infra/cloudflare` additionally needs `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_zone_id` — if unset, tell the user and skip that module rather than letting the plan prompt/hang.
 - `infra/dns` and `compute/vm` need `terraform.tfvars` (copy from `terraform.tfvars.example` if missing — ask the user for values, never invent them).
+- A non-default `compute/vm` instance additionally takes `-var-file=instances/<name>.tfvars` (see
+  `compute/vm/instances/README.md`) and its own `-backend-config` key. Planning one **without**
+  its var-file plans instance zero's names against that instance's state.
 
 ## Steps (per module, from the repo root)
 
@@ -38,6 +41,17 @@ terraform -chdir=<module> init -input=false
 terraform -chdir=<module> validate
 terraform -chdir=<module> plan -input=false
 ```
+
+**`compute/vm` is the exception (E17.4, #163): it uses a *partial* backend config**, so a bare
+`init` there fails with "Missing backend configuration". Its state key is a flag:
+
+```bash
+terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"
+```
+
+Add `-reconfigure` when the previous `init` in that checkout used a different key — otherwise
+Terraform reuses the cached backend and you plan the wrong instance. The other five modules
+still carry a literal `key` in `backend.tf` and take no flag.
 
 - If `fmt -check` fails, run `terraform -chdir=<module> fmt -recursive` and note which files changed.
 - NEVER run `terraform apply` or `terraform destroy` from this skill — plan only.

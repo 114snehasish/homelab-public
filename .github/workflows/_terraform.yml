@@ -7,6 +7,32 @@ on:
         description: 'Path to the Terraform root module (e.g. infra/network)'
         required: true
         type: string
+      # Split out of working_directory by E17.4 (#163). That one input used to
+      # be the checkout path, the state identity, the lock identity and the
+      # PR-comment identity all at once, which is exactly why one module could
+      # not be planned twice.
+      #
+      # Empty (the default) means the module hardcodes its own `key` in
+      # backend.tf and init runs bare — true for all five modules except
+      # compute/vm, which moved to partial backend config. Set it and init
+      # gets -backend-config="key=<state_key>"; it then also becomes this
+      # job's lock identity and PR-comment identity, so two instances of one
+      # module neither collide on the state blob nor overwrite each other's
+      # sticky comment.
+      state_key:
+        description: 'Backend state blob key (e.g. homelab.compute.tfstate). Empty = the module hardcodes its key in backend.tf.'
+        required: false
+        type: string
+        default: ''
+      # Per-instance variables. The shared env: block below can only express
+      # one repo-wide value per name; this is how one instance overrides one.
+      # -var-file outranks env-set TF_VAR_*, so an entry here beats the env
+      # block for the same variable.
+      var_file:
+        description: 'Optional -var-file=... for the plan, resolved relative to working_directory.'
+        required: false
+        type: string
+        default: ''
       apply:
         description: 'Apply the plan after it succeeds'
         required: false
@@ -39,17 +65,20 @@ jobs:
     name: Terraform
     runs-on: ubuntu-latest
     concurrency:
-      # One group per module: the thing being protected is the module's state
-      # blob, and every run that plans or applies takes a lease on it.
+      # One group per *state blob*, which is the thing actually being
+      # protected: every run that plans or applies takes a lease on it. The
+      # key therefore derives from whatever determines the state key —
+      # state_key when set, the module path when it is not (#163). A module
+      # that passes no state_key gets exactly the group it had before.
       #
-      # Any future workflow that also runs Terraform against a module must join
-      # this same group rather than defining its own. When oidc-smoke.yml
+      # Any future workflow that also runs Terraform against an instance must
+      # join this same group rather than defining its own. When oidc-smoke.yml
       # existed, a separate tf-<dir>-oidc-smoke group was tried and reverted —
       # the two sets of jobs then ran simultaneously and four plans died on
       # "state blob is already locked". Serializing is the correct trade: a
       # queued run that gets cancelled breaks nothing, while a lock collision
       # fails real work and could strand an apply mid-flight.
-      group: tf-${{ inputs.working_directory }}
+      group: tf-${{ inputs.state_key || inputs.working_directory }}
       cancel-in-progress: false
     env:
       # Shared by compute/vm (self-registered DNS A-record) and infra/dns, which
@@ -114,16 +143,30 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terraform version
 
+      # Same argument-array idiom as the plan step below, for the same reason:
+      # the backend key composes in without a second code path. -input=false is
+      # load-bearing under partial backend config — a missing key would
+      # otherwise leave Terraform waiting on a prompt no runner can answer.
+      #
+      # No -reconfigure: runners are clean per job, so there is never a stale
+      # .terraform/ to correct. A *local* operator switching instances inside
+      # one checkout does need it — see CLAUDE.md.
       - name: Terraform Init
         working-directory: ${{ inputs.working_directory }}
-        run: terraform init
+        run: |
+          args=(-input=false)
+          if [ -n "${{ inputs.state_key }}" ]; then
+            args+=(-backend-config="key=${{ inputs.state_key }}")
+          fi
+          terraform init "${args[@]}"
 
       - name: Terraform Validate
         working-directory: ${{ inputs.working_directory }}
         run: terraform validate
 
-      # Built as an argument array so `-destroy` and `-var=ssh_source_ip`
-      # compose independently instead of needing one branch per combination.
+      # Built as an argument array so `-destroy`, `-var=ssh_source_ip` and
+      # `-var-file` compose independently instead of needing one branch per
+      # combination. Keep that property when adding flags.
       # The step name carries the mode because this is the only place a
       # destroy plan is distinguishable at a glance in the run log.
       - name: Terraform Plan${{ inputs.destroy && ' (Destroy)' || '' }}
@@ -138,9 +181,17 @@ jobs:
           if [ -n "${{ inputs.ssh_source_ip }}" ]; then
             args+=(-var="ssh_source_ip=${{ inputs.ssh_source_ip }}")
           fi
+          if [ -n "${{ inputs.var_file }}" ]; then
+            args+=(-var-file="${{ inputs.var_file }}")
+          fi
           terraform plan "${args[@]}" 2>&1 | tee plan_output.txt
 
-      # One sticky comment per module, keyed by the `tf-plan: <dir>` marker.
+      # One sticky comment per *instance*, keyed by the `tf-plan: <instance>`
+      # marker — where the instance is the state key when there is one and the
+      # module path otherwise, the same rule the concurrency group uses (#163).
+      # Keyed by directory alone, two legs of one module found each other's
+      # comment via includes(marker) and raced to overwrite it, leaving one
+      # arbitrary plan visible. Two legs now create two comments instead.
       # There was a suppression input here while oidc-smoke.yml existed, so its
       # plans of the same five modules could not clobber these comments; with
       # that workflow deleted, every run reaching this step is the one run that
@@ -155,7 +206,10 @@ jobs:
             const path = require('path');
 
             const workingDir = '${{ inputs.working_directory }}';
-            const marker = `<!-- tf-plan: ${workingDir} -->`;
+            const stateKey = '${{ inputs.state_key }}';
+            const instance = stateKey || workingDir;
+            const marker = `<!-- tf-plan: ${instance} -->`;
+            const heading = stateKey ? `\`${workingDir}\` — \`${stateKey}\`` : `\`${workingDir}\``;
             const planFailed = '${{ steps.plan.outcome }}' !== 'success';
 
             let planText = fs.readFileSync(path.join(workingDir, 'plan_output.txt'), 'utf8');
@@ -180,7 +234,7 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const body = [
-              `#### Terraform Plan — \`${workingDir}\`` + (planFailed ? ' — plan failed' : ''),
+              `#### Terraform Plan — ${heading}` + (planFailed ? ' — plan failed' : ''),
               marker,
               noise,
               planFailed ? '\n**Plan failed** — see the output below.\n' : '',

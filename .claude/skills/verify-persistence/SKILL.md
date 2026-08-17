@@ -8,6 +8,13 @@ Prove that destroying the VM does not destroy the data disk ("cattle VM, pet dis
 
 Prerequisites: `infra/network`, `infra/storage`, and `compute/vm` are applied; Azure creds loaded (`set -a; source .env; set +a`); SSH access works from this machine (the NSG whitelists the IP that last ran the network apply).
 
+`compute/vm` uses a partial backend config (E17.4, #163), so initialize it with its state key
+before any `output`/`destroy`/`apply` below — a bare `init` there fails:
+
+```bash
+terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"
+```
+
 ## Steps
 
 1. **Get connection info**: `terraform -chdir=compute/vm output ssh_command` (user is `azureuser`).
