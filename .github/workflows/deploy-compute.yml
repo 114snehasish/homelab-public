@@ -72,13 +72,6 @@ jobs:
           - name: homelab-vm
             state_key: homelab.compute.tfstate
             var_file: ''
-          # TEMPORARY — verification leg for #163, deleted before merge.
-          # Proves two instances plan concurrently: distinct state blob,
-          # distinct concurrency group, distinct sticky comment, and a
-          # -var-file that renames every resource in its plan.
-          - name: canary
-            state_key: homelab.compute.canary.tfstate
-            var_file: instances/canary.tfvars
     uses: ./.github/workflows/_terraform.yml
     secrets: inherit
     with:
