@@ -32,7 +32,8 @@ As I expand the lab, new modules will be added, but these core components provid
 - `azurerm_virtual_network.homelab_vnet`: The address space (`var.vnet_address_space`, default 10.0.0.0/16) reserved for the lab.
 - `azurerm_subnet.homelab_subnets`: One subnet per entry in `var.subnets`, keyed by subnet name. Today that map holds exactly one entry — `homelab-subnet` = 10.0.0.0/24, the public tier.
 - `azurerm_network_security_group.homelab_nsg`: The security boundary.
-- `azurerm_network_security_rule.homelab_nsg_rules`: One rule per entry in `var.nsg_rules`, keyed by rule name. Today: `Allow-SSH` at priority 100.
+- `azurerm_network_security_rule.homelab_nsg_rules`: One rule per entry in `var.nsg_rules`, keyed by rule name. Today: `Allow-SSH` at priority 100, `Allow-HTTP` (80) at 110 and `Allow-HTTPS` (443) at 120.
+  - **The VM has public 80/443 exposure** (#37). Both are inbound TCP from `*` because a public web endpoint is the point; 80 is kept open for the ACME HTTP-01 fallback and the redirect to HTTPS, not for serving plaintext. Caddy ([#39](https://github.com/114snehasish/homelab/issues/39)) is the only intended listener on either port — anything else bound there is reachable from the internet the moment it starts.
 - `azurerm_subnet_network_security_group_association.homelab_nsg_assocs`: One per subnet — the NSG is owned at the subnet layer, per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md).
 
 ### Adding a subnet or a rule
@@ -42,6 +43,8 @@ Both are **map entries, not resource blocks** (#161). A subnet needs a name and
 `source_address_prefix` inherits the SSH whitelist default: `var.ssh_source_ip` if set,
 otherwise the public IP of whichever machine is running the plan (fetched live from
 api.ipify.org), which is why local and CI plans always disagree on that one value.
+A rule meant to be reachable from anywhere must therefore say `source_address_prefix = "*"`
+explicitly — omitting it silently narrows the rule to one address.
 
 ---
 
