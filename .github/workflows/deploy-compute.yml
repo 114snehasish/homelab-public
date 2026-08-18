@@ -23,15 +23,21 @@ on:
   # workflow otherwise matched nothing and ran no Terraform at all — one of the
   # two coverage gaps left when oidc-smoke.yml was deleted in #35. A PR editing
   # it now gets a real plan from all five modules.
+  #
+  # fleet.tfvars is in the filters because it is the fleet: adding or removing a
+  # node is an edit to that file and nothing else, and a plan that never ran
+  # would be the one that mattered most.
   push:
     branches: [main]
     paths:
       - 'compute/vm/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
   pull_request:
     paths:
       - 'compute/vm/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
 
@@ -44,9 +50,26 @@ permissions:
 
 jobs:
   terraform:
+    # One job for the whole fleet. compute/vm iterates fleet.tfvars internally
+    # with for_each, so adding a node is an entry in that file — not a matrix
+    # leg here, not a new state key, not a new concurrency group. The matrix
+    # this replaced (E17.4, #163) made every node cost three edits in three
+    # files; #159 had already decided the map-keyed shape and predicted that
+    # cost.
+    #
+    # var_file is resolved relative to working_directory, hence ../../ back to
+    # the repo root. It is required, not optional: compute/vm declares
+    # `instances` with no default so a plan that loses this flag fails loudly
+    # instead of planning to destroy the fleet.
+    #
+    # state_key stays: partial backend config is no longer what makes
+    # multiplicity work, but it costs nothing and keeps the option of splitting
+    # one node into its own state later.
     name: Terraform Compute
     uses: ./.github/workflows/_terraform.yml
     secrets: inherit
     with:
       working_directory: compute/vm
+      state_key: homelab.compute.tfstate
+      var_file: ../../fleet.tfvars
       apply: ${{ inputs.apply == true }}

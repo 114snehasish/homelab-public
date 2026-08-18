@@ -29,6 +29,9 @@ export ARM_SUBSCRIPTION_ID=<subscription_id>
 
 - `infra/cloudflare` additionally needs `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_zone_id` — if unset, tell the user and skip that module rather than letting the plan prompt/hang.
 - `infra/dns` and `compute/vm` need `terraform.tfvars` (copy from `terraform.tfvars.example` if missing — ask the user for values, never invent them).
+- Adding or removing a node is an edit to `fleet.tfvars`, which changes what **both** `compute/vm`
+  and `infra/storage` deploy — plan the two together, in that dependency order, and expect the
+  disk to appear before the VM that attaches it.
 
 ## Steps (per module, from the repo root)
 
@@ -37,6 +40,25 @@ terraform -chdir=<module> fmt -check -recursive
 terraform -chdir=<module> init -input=false
 terraform -chdir=<module> validate
 terraform -chdir=<module> plan -input=false
+```
+
+**`compute/vm` is the exception (E17.4, #163): it uses a *partial* backend config**, so a bare
+`init` there fails with "Missing backend configuration". Its state key is a flag:
+
+```bash
+terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"
+```
+
+Add `-reconfigure` when the previous `init` in that checkout used a different key. The other five
+modules still carry a literal `key` in `backend.tf` and take no flag.
+
+**`compute/vm` and `infra/storage` both require the fleet map** — they declare `instances` with no
+default, so `plan` without it fails on a missing variable (by design: the alternative is silently
+planning an empty fleet). Paths are relative to the module dir under `-chdir`:
+
+```bash
+terraform -chdir=compute/vm    plan -input=false -var-file=../../fleet.tfvars
+terraform -chdir=infra/storage plan -input=false -var-file=../../fleet.tfvars
 ```
 
 - If `fmt -check` fails, run `terraform -chdir=<module> fmt -recursive` and note which files changed.

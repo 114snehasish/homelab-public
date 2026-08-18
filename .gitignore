@@ -2,6 +2,10 @@
 keys/
 .env
 *.tfvars
+# ...except the fleet map, which is the authoring surface for compute instances
+# and is read by both compute/vm and infra/storage via _terraform.yml's
+# var_file input. Non-secret values only: main is force-mirrored to a public repo.
+!fleet.tfvars
 *.tfstate
 *.tfstate.*
 .terraform/

@@ -50,6 +50,22 @@ jobs:
     secrets: inherit
     with:
       working_directory: compute/vm
+      # Must match the state_key deploy-compute.yml passes for the same
+      # instance (E17.4, #163): compute/vm is partial-backend now, so this is
+      # what selects the state blob — and it is also the concurrency group, so
+      # a mismatch would let a destroy and a deploy of one node run at once.
+      #
+      # Deliberately a single leg while the fleet is one node. When a second
+      # instance lands (#166) this job needs a matrix mirroring
+      # deploy-compute.yml's, and destroy-cloudflare's `needs:` then means
+      # "needs *all* legs" — which is the default and the ordering this
+      # workflow's header describes.
+      state_key: homelab.compute.tfstate
+      # Required even to plan a destroy: `instances` has no default, so without
+      # this the destroy plan fails on a missing variable rather than tearing
+      # down the fleet. It tears down every node in the map — which is what
+      # this workflow already assumed when the fleet was one node.
+      var_file: ../../fleet.tfvars
       destroy: true
       apply: ${{ inputs.apply_destroy == true }}
 
