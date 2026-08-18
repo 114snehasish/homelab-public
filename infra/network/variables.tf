@@ -54,5 +54,30 @@ variable "nsg_rules" {
       destination_port_range     = "22"
       destination_address_prefix = "*"
     }
+    # 80/443 are open to the internet on purpose (#37): this tier is the public
+    # edge and Caddy (#39) is the only intended listener. 80 stays open for the
+    # ACME HTTP-01 fallback and the redirect to HTTPS, not for plaintext apps.
+    # source_address_prefix is explicit on both so they never inherit the SSH
+    # whitelist default.
+    "Allow-HTTP" = {
+      priority                   = 110
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "80"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    }
+    "Allow-HTTPS" = {
+      priority                   = 120
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "443"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    }
   }
 }
