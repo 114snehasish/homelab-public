@@ -29,9 +29,9 @@ export ARM_SUBSCRIPTION_ID=<subscription_id>
 
 - `infra/cloudflare` additionally needs `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_zone_id` — if unset, tell the user and skip that module rather than letting the plan prompt/hang.
 - `infra/dns` and `compute/vm` need `terraform.tfvars` (copy from `terraform.tfvars.example` if missing — ask the user for values, never invent them).
-- A non-default `compute/vm` instance additionally takes `-var-file=instances/<name>.tfvars` (see
-  `compute/vm/instances/README.md`) and its own `-backend-config` key. Planning one **without**
-  its var-file plans instance zero's names against that instance's state.
+- Adding or removing a node is an edit to `fleet.tfvars`, which changes what **both** `compute/vm`
+  and `infra/storage` deploy — plan the two together, in that dependency order, and expect the
+  disk to appear before the VM that attaches it.
 
 ## Steps (per module, from the repo root)
 
@@ -49,9 +49,17 @@ terraform -chdir=<module> plan -input=false
 terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"
 ```
 
-Add `-reconfigure` when the previous `init` in that checkout used a different key — otherwise
-Terraform reuses the cached backend and you plan the wrong instance. The other five modules
-still carry a literal `key` in `backend.tf` and take no flag.
+Add `-reconfigure` when the previous `init` in that checkout used a different key. The other five
+modules still carry a literal `key` in `backend.tf` and take no flag.
+
+**`compute/vm` and `infra/storage` both require the fleet map** — they declare `instances` with no
+default, so `plan` without it fails on a missing variable (by design: the alternative is silently
+planning an empty fleet). Paths are relative to the module dir under `-chdir`:
+
+```bash
+terraform -chdir=compute/vm    plan -input=false -var-file=../../fleet.tfvars
+terraform -chdir=infra/storage plan -input=false -var-file=../fleet.tfvars
+```
 
 - If `fmt -check` fails, run `terraform -chdir=<module> fmt -recursive` and note which files changed.
 - NEVER run `terraform apply` or `terraform destroy` from this skill — plan only.

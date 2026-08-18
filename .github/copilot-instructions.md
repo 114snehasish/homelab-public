@@ -29,8 +29,11 @@ terraform -chdir=<module> plan -input=false        # this is also how you "plan 
 ```
 
 - **`compute/vm` needs its backend key on `init`** (partial backend config, E17.4 #163):
-  `terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"`,
-  plus `-reconfigure` when switching instances in one checkout. A bare `init` there fails.
+  `terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compute.tfstate"`.
+  A bare `init` there fails.
+- **`compute/vm` and `infra/storage` need the fleet map on `plan`/`apply`** — both declare
+  `instances` with no default: `-var-file=../../fleet.tfvars` and `-var-file=../fleet.tfvars`
+  respectively. The repo-root `fleet.tfvars` is the single place a compute node is declared.
 
 - `.claude/skills/tf-plan/` wraps this pre-flight for one module or `all` (dependency order).
   A post-edit hook already runs `terraform fmt` on saved `.tf`/`.tfvars` files.

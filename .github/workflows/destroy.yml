@@ -61,6 +61,11 @@ jobs:
       # "needs *all* legs" — which is the default and the ordering this
       # workflow's header describes.
       state_key: homelab.compute.tfstate
+      # Required even to plan a destroy: `instances` has no default, so without
+      # this the destroy plan fails on a missing variable rather than tearing
+      # down the fleet. It tears down every node in the map — which is what
+      # this workflow already assumed when the fleet was one node.
+      var_file: ../../fleet.tfvars
       destroy: true
       apply: ${{ inputs.apply_destroy == true }}
 

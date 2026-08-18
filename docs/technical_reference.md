@@ -47,6 +47,13 @@ api.ipify.org), which is why local and CI plans always disagree on that one valu
 
 ## 3. Core Module: `infra/storage`
 
+**One disk per compute node.** `azurerm_managed_disk.homelab_data_disk` iterates the same
+`fleet.tfvars` map `compute/vm` uses, so a node added there gets its disk here. The deployed node
+pins `disk_name = "homelab-data-disk"` because that is the name the existing disk already carries —
+new keys fall back to `${instance}-data-disk`. The two modules are linked by naming convention, not
+`terraform_remote_state`: `compute/vm` looks its disk up through a data source, so the fallback
+pattern must stay identical on both sides.
+
 **Purpose**: Manages the persistent data assets. This is the "Vault" of my architecture.
 
 ### Resources
@@ -61,24 +68,26 @@ api.ipify.org), which is why local and CI plans always disagree on that one valu
 **Purpose**: The current execution environment. I designed this module to be highly disposable and replaceable.
 
 ### Resources
-Every name this module *produces* derives from `var.instance_name` (default `homelab-vm`), so
-the module is no longer welded to one node (#162):
+The module builds **one node per entry in the repo-root `fleet.tfvars`**, via `for_each` over
+`var.instances`. The map key *is* the instance name, and every name a node produces derives from
+it (#162), so the key `homelab-vm` reproduces the deployed node's names byte-for-byte. Below,
+`${instance}` is that key:
 
-- `azurerm_linux_virtual_machine.homelab_vm`: the Ubuntu host — named `${instance_name}`.
-- `azurerm_network_interface.vm_nic`: `${instance_name}-nic`.
-- `azurerm_public_ip.vm_public_ip`: `${instance_name}-public-ip`.
-- ↳ `os_disk`: `${instance_name}-osdisk`.
-- `azurerm_dns_a_record.vm_record`: the A record the VM registers for itself, labelled `${instance_name}`.
-- `azurerm_virtual_machine_data_disk_attachment`: The dynamic link between the disposable VM
-  and the persistent storage, at `var.data_disk_lun` (default 10).
+- `azurerm_linux_virtual_machine.homelab_vm`: the Ubuntu host — named `${instance}`.
+- `azurerm_network_interface.vm_nic`: `${instance}-nic`.
+- `azurerm_public_ip.vm_public_ip`: `${instance}-public-ip`.
+- ↳ `os_disk`: `${instance}-osdisk`.
+- `azurerm_dns_a_record.vm_record`: the A record the VM registers for itself, labelled `${instance}`.
+- `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
+  *its own* persistent disk, at the entry's `data_disk_lun` (default 10).
 
 **No NSG association lives here.** Per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md)
 the subnet is the single owner of NSG policy; the NIC-level association this module used to
 create was removed in #162. Rules are a property of the tier a node sits in, so they are
 edited in `infra/network`'s `var.nsg_rules`.
 
-**Outputs are scalars, not maps.** `public_ip` and `ssh_command` describe one node. They become
-maps keyed by instance name in E17.6/E17.7 ([#165](https://github.com/114snehasish/homelab/issues/165)/[#166](https://github.com/114snehasish/homelab/issues/166)).
+**Outputs are maps keyed by instance name** — `public_ip` and `ssh_command` describe a fleet, so
+read them with `terraform output -json ssh_command | jq -r '."homelab-vm"'`.
 
 ### State: partial backend config
 Alone among the six modules, `compute/vm/backend.tf` carries **no `key`**. The state blob is
@@ -95,16 +104,22 @@ plan the wrong one. Keeping a literal `key` here *as well* was rejected: the fil
 lie, and a bare `init` would silently target instance zero.
 
 ### Adding a second instance
-The CI half is done: a second instance is a matrix entry in `deploy-compute.yml` (its own
-`state_key`, its own `instances/<name>.tfvars` — see `compute/vm/instances/README.md`), and
-`_terraform.yml` keys the state blob, the concurrency group and the sticky PR comment off that
-`state_key`, so two instances plan concurrently without colliding.
+**One entry in `fleet.tfvars`.** That is the whole authoring surface: no workflow edit, no new
+state key, no new concurrency group, no `destroy.yml` leg. `infra/storage` reads the same map and
+creates that node's data disk, so the "a managed disk cannot attach to two VMs" constraint is
+handled by the disks multiplying in lockstep.
 
-What is still missing is on the Terraform side: a managed disk cannot attach to two VMs
-([#165](https://github.com/114snehasish/homelab/issues/165)), and this module's scalar outputs
-plus the fleet-wide `destroy` in `.claude/skills/verify-persistence/` have to become
-per-instance ([#166](https://github.com/114snehasish/homelab/issues/166)). A second node also
-has to pass ADR-0012's "earns its own VM" test first — the default fleet stays at one.
+```hcl
+instances = {
+  homelab-vm    = { disk_name = "homelab-data-disk" }
+  homelab-tools = {}
+}
+```
+
+Cheap is not the same as justified: ADR-0012's "earns its own VM" test and #159's "default fleet
+stays at one node" still gate whether a second node *should* exist, and E09 (k3s,
+[#22](https://github.com/114snehasish/homelab/issues/22)) may answer that with an agent node
+instead of a pet VM.
 
 ### Automation (`cloud-init.yaml`)
 The bootstrapping script is designed to:
@@ -236,14 +251,19 @@ why no module could be planned twice. E17.4 split them:
   `working_directory`). It outranks the job-level `TF_VAR_*` `env:` block, so
   one instance can override a repo-wide value.
 
-`deploy-compute.yml` is the only caller that fans out: its `uses:` job carries
-a `strategy: matrix` with one entry per instance (one today, deliberately),
-each supplying `name`, `state_key` and `var_file`. `deploy.yml →
-deploy-compute.yml → _terraform.yml` is 3 of GitHub's 4 workflow-nesting
-levels, so the matrix fits at this level and an extra wrapper workflow would
-not. `destroy.yml`'s compute job passes the same `state_key` — it must, or a
-destroy and a deploy of one node could run at once — and stays a single leg
-until #166 adds a second instance.
+No caller fans out. `deploy-compute.yml` briefly carried a `strategy: matrix`
+with one leg per instance; that came out when `compute/vm` grew `for_each`,
+because a node is now an entry in `fleet.tfvars` rather than a matrix leg —
+which is the shape #159 had decided on from the start.
+
+`var_file` is what carries that file in: `deploy-compute.yml` passes
+`../../fleet.tfvars`, `deploy-storage.yml` passes `../fleet.tfvars` (paths are
+relative to `working_directory`), and `destroy.yml`'s compute leg passes it too
+— without it `plan -destroy` fails on the missing `instances` variable before it
+can tear anything down. Both modules declare that variable with **no default**,
+so losing the flag is a loud failure rather than a plan that quietly destroys
+every node. `destroy.yml` also passes the same `state_key` as the deploy leg, or
+a destroy and a deploy of one node could run at once.
 
 All five also list `.github/workflows/_terraform.yml` in their `push` and
 `pull_request` path filters (#153): without it, a PR that changed only the

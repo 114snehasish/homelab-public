@@ -24,19 +24,20 @@ on:
   # two coverage gaps left when oidc-smoke.yml was deleted in #35. A PR editing
   # it now gets a real plan from all five modules.
   #
-  # `compute/vm/**` fires *every* matrix leg on any change under the module —
-  # correct for shared code, noisy for an edit to a single instance's tfvars.
-  # That noise is the accepted trade: the alternative is a workflow file per
-  # instance, which is exactly the duplication #153 removed.
+  # fleet.tfvars is in the filters because it is the fleet: adding or removing a
+  # node is an edit to that file and nothing else, and a plan that never ran
+  # would be the one that mattered most.
   push:
     branches: [main]
     paths:
       - 'compute/vm/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
   pull_request:
     paths:
       - 'compute/vm/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
 
@@ -49,33 +50,26 @@ permissions:
 
 jobs:
   terraform:
-    # One leg per compute instance (E17.4, #163). Today the fleet is one node
-    # and that is deliberate — multiplicity is a capability, not a deployment
-    # (#159, ADR-0012). A second entry is what #166 adds once a workload has
-    # passed the "earns its own VM" test.
+    # One job for the whole fleet. compute/vm iterates fleet.tfvars internally
+    # with for_each, so adding a node is an entry in that file — not a matrix
+    # leg here, not a new state key, not a new concurrency group. The matrix
+    # this replaced (E17.4, #163) made every node cost three edits in three
+    # files; #159 had already decided the map-keyed shape and predicted that
+    # cost.
     #
-    # state_key and var_file are spelled out per entry rather than derived from
-    # `name`: the existing node's key is `homelab.compute.tfstate`, which no
-    # naming convention reproduces without a special case. state_key is also
-    # the leg's concurrency group and PR-comment identity in _terraform.yml,
-    # so two entries must never share one.
+    # var_file is resolved relative to working_directory, hence ../../ back to
+    # the repo root. It is required, not optional: compute/vm declares
+    # `instances` with no default so a plan that loses this flag fails loudly
+    # instead of planning to destroy the fleet.
     #
-    # var_file is resolved relative to compute/vm and belongs in
-    # compute/vm/instances/ (see the README there). The existing node has none:
-    # its values are the module defaults plus the shared TF_VAR_* env block.
-    name: Terraform Compute (${{ matrix.instance.name }})
-    strategy:
-      # A failed plan on one instance must not cancel the others' plans.
-      fail-fast: false
-      matrix:
-        instance:
-          - name: homelab-vm
-            state_key: homelab.compute.tfstate
-            var_file: ''
+    # state_key stays: partial backend config is no longer what makes
+    # multiplicity work, but it costs nothing and keeps the option of splitting
+    # one node into its own state later.
+    name: Terraform Compute
     uses: ./.github/workflows/_terraform.yml
     secrets: inherit
     with:
       working_directory: compute/vm
-      state_key: ${{ matrix.instance.state_key }}
-      var_file: ${{ matrix.instance.var_file }}
+      state_key: homelab.compute.tfstate
+      var_file: ../../fleet.tfvars
       apply: ${{ inputs.apply == true }}

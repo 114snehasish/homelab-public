@@ -17,7 +17,7 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
 
 ## Steps
 
-1. **Get connection info**: `terraform -chdir=compute/vm output ssh_command` (user is `azureuser`).
+1. **Get connection info**: `terraform -chdir=compute/vm output -json ssh_command | jq -r '."homelab-vm"'` — the outputs are **maps keyed by instance name** now that the module builds a fleet.
 2. **Seed persistent data** over SSH:
    ```bash
    df -h /data                     # confirm the 20GB disk is mounted
@@ -26,14 +26,18 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
    ```
 3. **Confirm with the user before this step, showing the plan** — then destroy ONLY the compute module:
    ```bash
-   terraform -chdir=compute/vm destroy -auto-approve
+   terraform -chdir=compute/vm destroy -auto-approve -var-file=../../fleet.tfvars \
+     -target='azurerm_linux_virtual_machine.homelab_vm["homelab-vm"]' \
+     -target='azurerm_virtual_machine_data_disk_attachment.data_disk_attachment["homelab-vm"]'
    ```
-   Never touch `infra/storage` (its disk has `prevent_destroy`) or any other module.
+   Never touch `infra/storage` (its disks have `prevent_destroy`) or any other module.
 
-   **This destroys the whole module, not one node.** Harmless while the fleet is one node,
-   which it is today — but the moment `compute/vm` holds more than one instance this becomes
-   a fleet-wide destroy. Fixed in E17.7 (#166), which is when it first bites.
-4. **Recreate**: `terraform -chdir=compute/vm apply -auto-approve`. Wait for cloud-init to finish (it remounts the existing disk at /data without formatting — check `/var/log/disk-setup.log` if unsure).
+   **Target one node.** `compute/vm` now builds every entry in `fleet.tfvars` with `for_each`, so
+   an untargeted `destroy` here tears down the **whole fleet**. While the fleet is one node the
+   two are the same thing; the moment it is not, the untargeted form is a mistake. (Removing the
+   entry from `fleet.tfvars` and applying is the other way to retire one node — that one is
+   permanent, which is not what this test wants.)
+4. **Recreate**: `terraform -chdir=compute/vm apply -auto-approve -var-file=../../fleet.tfvars`. Wait for cloud-init to finish (it remounts the existing disk at /data without formatting — check `/var/log/disk-setup.log` if unsure).
 5. **Verify survival** on the new VM (fresh Docker engine, so `docker ps -a` being empty is expected):
    ```bash
    sudo docker run -d --name test-redis-2 -v /data/redis:/data redis

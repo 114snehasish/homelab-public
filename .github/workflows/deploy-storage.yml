@@ -23,15 +23,21 @@ on:
   # workflow otherwise matched nothing and ran no Terraform at all — one of the
   # two coverage gaps left when oidc-smoke.yml was deleted in #35. A PR editing
   # it now gets a real plan from all five modules.
+  #
+  # fleet.tfvars is in the filters because this module now builds one disk per
+  # compute node from it: adding a node changes what this module deploys, even
+  # though nothing under infra/storage/ was touched.
   push:
     branches: [main]
     paths:
       - 'infra/storage/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-storage.yml'
       - '.github/workflows/_terraform.yml'
   pull_request:
     paths:
       - 'infra/storage/**'
+      - 'fleet.tfvars'
       - '.github/workflows/deploy-storage.yml'
       - '.github/workflows/_terraform.yml'
 
@@ -49,4 +55,7 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/storage
+      # The same repo-root fleet map compute/vm reads, one directory shallower.
+      # Required: this module declares `instances` with no default.
+      var_file: ../fleet.tfvars
       apply: ${{ inputs.apply == true }}
