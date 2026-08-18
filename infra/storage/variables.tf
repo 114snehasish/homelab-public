@@ -14,7 +14,7 @@ variable "location" {
 # serve both modules. A misspelled attribute is therefore ignored rather than
 # rejected — read the plan.
 #
-# No default, deliberately: a plan that forgets `-var-file=../fleet.tfvars`
+# No default, deliberately: a plan that forgets `-var-file=../../fleet.tfvars`
 # fails with "No value for required variable" instead of quietly planning to
 # delete every disk in the fleet. prevent_destroy would catch that, but failing
 # before the plan is better than failing during it.

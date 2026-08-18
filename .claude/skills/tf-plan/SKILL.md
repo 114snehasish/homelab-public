@@ -58,7 +58,7 @@ planning an empty fleet). Paths are relative to the module dir under `-chdir`:
 
 ```bash
 terraform -chdir=compute/vm    plan -input=false -var-file=../../fleet.tfvars
-terraform -chdir=infra/storage plan -input=false -var-file=../fleet.tfvars
+terraform -chdir=infra/storage plan -input=false -var-file=../../fleet.tfvars
 ```
 
 - If `fmt -check` fails, run `terraform -chdir=<module> fmt -recursive` and note which files changed.

@@ -55,7 +55,8 @@ jobs:
     secrets: inherit
     with:
       working_directory: infra/storage
-      # The same repo-root fleet map compute/vm reads, one directory shallower.
-      # Required: this module declares `instances` with no default.
-      var_file: ../fleet.tfvars
+      # The same repo-root fleet map compute/vm reads. Two levels up, not one:
+      # the path is relative to working_directory, and infra/storage is as deep
+      # as compute/vm. Required — this module declares `instances` with no default.
+      var_file: ../../fleet.tfvars
       apply: ${{ inputs.apply == true }}

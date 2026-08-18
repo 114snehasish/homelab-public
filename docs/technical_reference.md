@@ -257,8 +257,9 @@ because a node is now an entry in `fleet.tfvars` rather than a matrix leg —
 which is the shape #159 had decided on from the start.
 
 `var_file` is what carries that file in: `deploy-compute.yml` passes
-`../../fleet.tfvars`, `deploy-storage.yml` passes `../fleet.tfvars` (paths are
-relative to `working_directory`), and `destroy.yml`'s compute leg passes it too
+`../../fleet.tfvars` and so does `deploy-storage.yml` — paths are relative to
+`working_directory`, and both modules sit two levels deep — and `destroy.yml`'s
+compute leg passes it too
 — without it `plan -destroy` fails on the missing `instances` variable before it
 can tear anything down. Both modules declare that variable with **no default**,
 so losing the flag is a loud failure rather than a plan that quietly destroys
