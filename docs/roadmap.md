@@ -21,7 +21,8 @@ Two long-standing "ask first" inconsistencies from CLAUDE.md were decided (owner
 
 | Decision | Pick | Why (one line) |
 |---|---|---|
-| Reverse proxy | **Caddy** | Automatic HTTPS; DNS-01 wildcard cert via Cloudflare plugin avoids leaking hostnames to CT logs; one less config language than Traefik. |
+| Reverse proxy | **Caddy** | Automatic HTTPS; DNS-01 wildcard cert avoids leaking hostnames to CT logs; one less config language than Traefik. |
+| Caddy's DNS-01 provider | **`caddy-dns/azure` + VM managed identity** | `az.snehasish-chakraborty.com` is delegated to Azure DNS, not Cloudflare (confirmed live: Cloudflare's nameservers return a referral, not an answer, for `_acme-challenge.az…`) — a Cloudflare-authenticated challenge writes the TXT record somewhere Let's Encrypt never looks. A user-assigned identity means no credential on disk at all. See ADR-0013 (`#39`). |
 | Zero-trust access | **Tailscale** | Zero-config mesh + MagicDNS + official GitHub Action for ephemeral CI nodes; break-glass workflow as the escape hatch. |
 | GitOps | **Argo CD** | Sync/drift/health made visible in a UI — worth more to a learner than Flux's purity; bigger job-market keyword. |
 | Backup | **Azure Backup vault** | The real enterprise service (policies, retention, restore points) + an on-demand pre-op snapshot workflow for risky applies. |
@@ -94,7 +95,7 @@ Sequencing rules that are **not optional**:
 - **E06 internal order is lockout-critical**: tailnet proven → CI on tailnet → break-glass exists → only then remove public SSH.
 - **Vaultwarden (#45) and k3s install (#68) are hard-blocked on the restore drill (#58).**
 - **Pre-op snapshot (#59) before every VM-recreating apply.**
-- **E15's disk migration + mount contract land before E03.3** — Caddy is the first thing to write real state to `/data`; moving a near-empty disk to the persist RG is trivial, moving a live one is surgery.
+- **E15's disk migration + mount contract land before E03.3** — Caddy is the first thing to write real state to `/data`; moving a near-empty disk to the persist RG is trivial, moving a live one is surgery. **Deviation, recorded here:** `#39` shipped before `#98`/`#99` landed — the disk was still near-empty at the time (a fresh `homelab-data-disk`, nothing but Caddy's ACME state), so the risk this ordering guards against was judged small enough to accept rather than block on. `#98`'s snapshot-swap runbook must run `docker compose down` in `apps/caddy` immediately before the snapshot, so the swap never happens under a live ACME writer — that step is not optional cleanup, it is what makes shipping `#39` first safe in hindsight.
 - **Park = final restic backup → destroy `compute/vm` only.** Network RG, DNS zone, Key Vault, and the persist RG stay up (all near-free). Resume = apply `compute/vm` → mount guard verifies the disk → apps pick up where they left off, certs included (no ACME re-issuance).
 - **E17.2 (#161) lands before E03.1 (#37)** — #37 is the first NSG edit since the NSG was written. Against a rules map it is two entries; against singletons it is two more `azurerm_network_security_rule` blocks with hand-picked priorities, refactored away later anyway.
 - **E17 Phase 2 is hard-gated on E06.4 (#54).** A private subnet built before Tailscale needs a bastion host to reach it; built after, the tailnet *is* the access path. This is the whole reason Phase 2 sits in month 2.

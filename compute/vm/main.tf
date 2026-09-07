@@ -86,6 +86,17 @@ locals {
   public_edge_instances = [for name, inst in var.instances : name if inst.public_edge]
 }
 
+# Caddy's DNS-01 identity (#39), created once by infra/identity and looked up
+# here by name — the same by-name coupling every cross-module reference in
+# this repo uses (see CLAUDE.md). Keyed off the same 0-or-1 set as the
+# wildcard record above, so it only exists to be attached to the edge node,
+# never fleet-wide.
+data "azurerm_user_assigned_identity" "edge_dns" {
+  for_each            = toset(local.public_edge_instances)
+  name                = var.edge_dns_identity_name
+  resource_group_name = var.identity_rg_name
+}
+
 resource "azurerm_dns_a_record" "wildcard_record" {
   for_each            = toset(local.public_edge_instances)
   name                = "*"
@@ -146,6 +157,20 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
 
   disable_password_authentication = true
   allow_extension_operations      = false
+
+  # User-assigned only on the edge node (0-or-1 set, same as the wildcard
+  # record) — private-tier nodes have no DNS-01 identity to attach. Does NOT
+  # need allow_extension_operations = true: the IMDS token endpoint and VM
+  # extensions are separate mechanisms, verified live against this VM before
+  # writing this block (a container on the `web` bridge network reached
+  # http://169.254.169.254/metadata/instance with no extension involved).
+  dynamic "identity" {
+    for_each = each.value.public_edge ? [1] : []
+    content {
+      type         = "UserAssigned"
+      identity_ids = [data.azurerm_user_assigned_identity.edge_dns[each.key].id]
+    }
+  }
 
   os_disk {
     name                 = "${each.key}-osdisk"

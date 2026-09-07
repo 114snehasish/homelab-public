@@ -1,6 +1,13 @@
 .terraform
 keys/
 .env
+# The bare pattern above only catches a literal `.env` — `apps/caddy/.env` is
+# covered by it, but a differently-named env file anywhere under apps/ (or a
+# `.env.local`) would not be. There is no secret scanner in this repo's CI, and
+# main is force-mirrored to a public repo on every push, so cover the whole
+# apps/ tree explicitly rather than relying on the root pattern reaching it.
+apps/**/*.env
+!apps/**/*.env.example
 *.tfvars
 # ...except the fleet map, which is the authoring surface for compute instances
 # and is read by both compute/vm and infra/storage via _terraform.yml's

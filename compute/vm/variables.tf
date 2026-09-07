@@ -83,3 +83,19 @@ variable "dns_rg_name" {
   type        = string
   default     = "homelab-rg"
 }
+
+# --- Edge DNS identity (E03.3, #39) ---------------------------------------
+# Both default: every fleet built against this repo's infra/identity module
+# gets the same names, and no workflow env var is needed for either.
+
+variable "edge_dns_identity_name" {
+  description = "Name of the user-assigned managed identity (created in infra/identity) that Caddy uses for the Azure DNS-01 challenge — attached only to the instance with public_edge = true"
+  type        = string
+  default     = "homelab-edge-dns-identity"
+}
+
+variable "identity_rg_name" {
+  description = "Resource group holding the edge DNS identity, created by infra/identity"
+  type        = string
+  default     = "homelab-identity-rg"
+}
