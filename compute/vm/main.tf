@@ -95,6 +95,17 @@ resource "azurerm_dns_a_record" "wildcard_record" {
   target_resource_id  = azurerm_public_ip.vm_public_ip[each.key].id
 }
 
+# TODO: same one-shot rename fixup as infra/storage's moved block. Delete once
+# `terraform -chdir=compute/vm apply` has run and state shows
+# wildcard_record["homelab-edge"] — not a standing record of the rename, just the
+# state-address side of the homelab-vm -> homelab-edge move. This record's own
+# `name` is the literal "*", not derived from the key, so without this block it
+# would otherwise be destroyed and recreated for no reason beyond the key change.
+moved {
+  from = azurerm_dns_a_record.wildcard_record["homelab-vm"]
+  to   = azurerm_dns_a_record.wildcard_record["homelab-edge"]
+}
+
 resource "azurerm_network_interface" "vm_nic" {
   # checkov:skip=CKV_AZURE_119:Public IP is intentional for direct SSH access; removed only after Tailscale zero-trust access lands (E06, #19) per CLAUDE.md's lockout-critical ordering
   for_each            = var.instances

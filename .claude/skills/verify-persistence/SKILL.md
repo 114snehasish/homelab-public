@@ -17,7 +17,7 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
 
 ## Steps
 
-1. **Get connection info**: `terraform -chdir=compute/vm output -json ssh_command | jq -r '."homelab-vm"'` — the outputs are **maps keyed by instance name** now that the module builds a fleet.
+1. **Get connection info**: `terraform -chdir=compute/vm output -json ssh_command | jq -r '."homelab-edge"'` — the outputs are **maps keyed by instance name** now that the module builds a fleet.
 2. **Seed persistent data** over SSH:
    ```bash
    df -h /data                     # confirm the 20GB disk is mounted
@@ -27,8 +27,8 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
 3. **Confirm with the user before this step, showing the plan** — then destroy ONLY the compute module:
    ```bash
    terraform -chdir=compute/vm destroy -auto-approve -var-file=../../fleet.tfvars \
-     -target='azurerm_linux_virtual_machine.homelab_vm["homelab-vm"]' \
-     -target='azurerm_virtual_machine_data_disk_attachment.data_disk_attachment["homelab-vm"]'
+     -target='azurerm_linux_virtual_machine.homelab_vm["homelab-edge"]' \
+     -target='azurerm_virtual_machine_data_disk_attachment.data_disk_attachment["homelab-edge"]'
    ```
    Never touch `infra/storage` (its disks have `prevent_destroy`) or any other module.
 

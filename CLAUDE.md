@@ -13,7 +13,7 @@ Deploy in this order — later modules find earlier ones' resources **by name vi
 2. `infra/dns` — Azure DNS zone `az.snehasish-chakraborty.com` (root domain `snehasish-chakraborty.com` lives in Cloudflare)
 3. `infra/cloudflare` — NS records delegating `az.*` from Cloudflare to Azure DNS
 4. `infra/storage` — one persistent 20GB data disk **per compute instance** (`prevent_destroy = true`), built with `for_each` over the same `fleet.tfvars` map `compute/vm` reads
-5. `compute/vm` — disposable VMs (`homelab-vm.az.snehasish-chakraborty.com`); one per entry in `fleet.tfvars`, each attaching its own data disk at LUN 10 and registering its own DNS A record
+5. `compute/vm` — disposable VMs (`homelab-edge.az.snehasish-chakraborty.com`); one per entry in `fleet.tfvars`, each attaching its own data disk at LUN 10 and registering its own DNS A record
 
 Run `terraform init && terraform plan|apply` inside each module directory. Plans/applies happen both locally and via GitHub Actions — no strict rule.
 

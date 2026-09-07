@@ -73,7 +73,7 @@ pattern must stay identical on both sides.
 ### Resources
 The module builds **one node per entry in the repo-root `fleet.tfvars`**, via `for_each` over
 `var.instances`. The map key *is* the instance name, and every name a node produces derives from
-it (#162), so the key `homelab-vm` reproduces the deployed node's names byte-for-byte. Below,
+it (#162), so the key `homelab-edge` reproduces the deployed node's names byte-for-byte. Below,
 `${instance}` is that key:
 
 - `azurerm_linux_virtual_machine.homelab_vm`: the Ubuntu host — named `${instance}`.
@@ -97,7 +97,7 @@ create was removed in #162. Rules are a property of the tier a node sits in, so 
 edited in `infra/network`'s `var.nsg_rules`.
 
 **Outputs are maps keyed by instance name** — `public_ip` and `ssh_command` describe a fleet, so
-read them with `terraform output -json ssh_command | jq -r '."homelab-vm"'`.
+read them with `terraform output -json ssh_command | jq -r '."homelab-edge"'`.
 
 ### State: partial backend config
 Alone among the six modules, `compute/vm/backend.tf` carries **no `key`**. The state blob is
@@ -121,7 +121,7 @@ handled by the disks multiplying in lockstep.
 
 ```hcl
 instances = {
-  homelab-vm    = { disk_name = "homelab-data-disk" }
+  homelab-edge  = { disk_name = "homelab-data-disk", public_edge = true }
   homelab-tools = {}
 }
 ```

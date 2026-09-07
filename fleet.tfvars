@@ -22,8 +22,8 @@
 # apply, and E09 (k3s, #22) may make a second VM unnecessary.
 
 instances = {
-  # The deployed node. Every default reproduces today's names byte-for-byte.
-  homelab-vm = {
+  # The deployed node — the sole public edge (renamed from homelab-vm).
+  homelab-edge = {
     # Pinned, and load-bearing: the existing disk is `homelab-data-disk`, not
     # `homelab-vm-data-disk`. New keys fall back to "${key}-data-disk"; letting
     # this one follow that pattern would be a rename, i.e. destroy-and-recreate
