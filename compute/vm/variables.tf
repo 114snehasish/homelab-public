@@ -1,7 +1,7 @@
 # --- The fleet ---
 
 variable "instances" {
-  description = "One entry per compute node, keyed by instance name. The key is the name: the VM, NIC, public IP, OS disk and DNS A-record label all derive from it, so the key `homelab-vm` reproduces the deployed node's names exactly. Adding a node is one entry in fleet.tfvars."
+  description = "One entry per compute node, keyed by instance name. The key is the name: the VM, NIC, public IP, OS disk and DNS A-record label all derive from it, so the key `homelab-edge` reproduces the deployed node's names exactly. Adding a node is one entry in fleet.tfvars."
   type = map(object({
     # Azure VM size. The resize to Standard_B4ms is tracked in #61.
     vm_size = optional(string, "Standard_B2s")
