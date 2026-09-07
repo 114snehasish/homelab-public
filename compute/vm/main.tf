@@ -62,6 +62,39 @@ resource "azurerm_dns_a_record" "vm_record" {
   target_resource_id  = azurerm_public_ip.vm_public_ip[each.key].id
 }
 
+# The wildcard `*.<zone>` record (#38). It lives here rather than in infra/dns,
+# where static records belong by convention, for three reasons:
+#
+#   1. An alias record needs the public IP's *resource ID*. This module holds it
+#      directly; infra/dns would need a data source lookup by name.
+#   2. destroy.yml tears this module down routinely (cattle VM, pet disk). That
+#      lookup would then fail on every infra/dns plan between deploy cycles —
+#      exactly the #124 failure mode.
+#   3. Module order runs dns (#2) before compute (#5). A compute-dependent record
+#      in infra/dns inverts the dependency.
+#
+# target_resource_id, not `records = [ip]`: recreating the VM re-points the
+# record set in Azure with no Terraform run, so `*` survives a destroy/deploy
+# cycle the same way the per-node record does. Requires a Standard SKU public IP,
+# which vm_public_ip above already is.
+#
+# for_each over a 0-or-1 set rather than count, so the address stays keyed by
+# instance name like everything else here — and so flipping which node is the
+# edge moves the record instead of renumbering it.
+locals {
+  # At most one entry, enforced by var.instances' validation.
+  public_edge_instances = [for name, inst in var.instances : name if inst.public_edge]
+}
+
+resource "azurerm_dns_a_record" "wildcard_record" {
+  for_each            = toset(local.public_edge_instances)
+  name                = "*"
+  zone_name           = data.azurerm_dns_zone.homelab.name
+  resource_group_name = var.dns_rg_name
+  ttl                 = 300
+  target_resource_id  = azurerm_public_ip.vm_public_ip[each.key].id
+}
+
 resource "azurerm_network_interface" "vm_nic" {
   # checkov:skip=CKV_AZURE_119:Public IP is intentional for direct SSH access; removed only after Tailscale zero-trust access lands (E06, #19) per CLAUDE.md's lockout-critical ordering
   for_each            = var.instances

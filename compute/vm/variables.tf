@@ -25,7 +25,23 @@ variable "instances" {
     # null means "${key}-data-disk"; the deployed node pins "homelab-data-disk"
     # because that is what already exists.
     disk_name = optional(string)
+    # Marks this node as the public edge: the one the wildcard `*` DNS record
+    # points at (#38). ADR-0012 fixes the public tier at exactly one node — Caddy
+    # is the sole edge and private nodes sit behind it — so the validation below
+    # holds this to one. Opt-in: a fleet that flags nothing gets no wildcard,
+    # which is what makes this safe to add without touching the record set until
+    # fleet.tfvars says so.
+    public_edge = optional(bool, false)
   }))
+
+  # The wildcard is a single DNS record set. Two flagged nodes would be two
+  # Terraform resources writing the same `*` name in the same zone — Azure keeps
+  # whichever applied last, and the plan would look clean while doing it. Fail at
+  # plan time instead. Raising this limit is an ADR-0012 change, not a knob.
+  validation {
+    condition     = length([for name, inst in var.instances : name if inst.public_edge]) <= 1
+    error_message = "At most one instance may set public_edge = true: `*` is one DNS record set, and ADR-0012 fixes the public tier at exactly one node."
+  }
 
   # Deliberately no default. A plan that forgets
   # `-var-file=../../fleet.tfvars` then fails with "No value for required
