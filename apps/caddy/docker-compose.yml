@@ -1,0 +1,26 @@
+# Caddy — the single public edge. See apps/README.md for the pattern this
+# file is an instance of, and the manual deploy runbook.
+services:
+  caddy:
+    build: .
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    env_file:
+      - .env
+    volumes:
+      - /data/caddy/data:/data
+      - /data/caddy/config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - web
+
+# External: created once per apps/README.md ("docker network create web"),
+# not owned by any single app's compose file. Every app that Caddy proxies to
+# joins this same network so Caddy can reach it by container name.
+networks:
+  web:
+    external: true

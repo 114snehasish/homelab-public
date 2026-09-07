@@ -157,3 +157,70 @@ resource "azurerm_role_assignment" "vm_ssh_key_reader" {
 
   skip_service_principal_aad_check = true # same replication-lag reason as above
 }
+
+# --- Edge DNS identity (E03.3, #39) ---------------------------------------
+#
+# A second, unrelated UAMI: Caddy's DNS-01 identity, not the CI identity above.
+# It lets Caddy authenticate to Azure DNS from inside a container on the edge
+# VM with no credential on disk anywhere — libdns/azure falls back to managed
+# identity when tenant_id/client_id/client_secret are all left empty.
+#
+# User-assigned, not system-assigned: compute/vm is cattle (destroy.yml tears
+# it down every park cycle). A system-assigned identity dies with the VM and
+# mints a new principal_id, breaking the role assignment below on every
+# recreate. This one is created once, here, and compute/vm only ever attaches
+# it by name.
+#
+# No prevent_destroy, unlike homelab_github_oidc above: nothing outside this
+# module references this identity's client_id — recreating it costs one
+# infra/identity re-apply, not a repo-variable update and a re-bootstrap.
+resource "azurerm_user_assigned_identity" "homelab_edge_dns" {
+  name                = var.edge_uami_name
+  location            = azurerm_resource_group.homelab_identity_rg.location
+  resource_group_name = azurerm_resource_group.homelab_identity_rg.name
+
+  # Not local.tags: that map's purpose = "github-oidc" describes the CI
+  # identity above, not this one. Same environment tag, distinct purpose.
+  tags = merge(local.tags, { purpose = "caddy-dns01" })
+}
+
+# Looked up by name, the same by-name coupling CLAUDE.md documents everywhere
+# else in this repo (a zone rename silently breaks this lookup) — infra/dns is
+# a separate root module with its own state, not something this module can
+# depend on directly. Unlike the RBAC data sources above, which only read
+# resources pre-existing outside this repo, this one depends on infra/dns
+# having already applied: a from-scratch rebuild applies infra/dns before
+# infra/identity for that reason.
+data "azurerm_dns_zone" "homelab" {
+  name                = var.dns_zone_name
+  resource_group_name = var.homelab_rg_name
+}
+
+# Caddy's only Azure right: write the ACME DNS-01 TXT challenge into the zone
+# and clean it up after. Scoped to the zone, not homelab-rg — this identity has
+# no reason to touch the VM, the disk, or anything else Contributor would allow.
+resource "azurerm_role_assignment" "edge_dns_zone_contributor" {
+  scope                = data.azurerm_dns_zone.homelab.id
+  role_definition_name = "DNS Zone Contributor"
+  principal_id         = azurerm_user_assigned_identity.homelab_edge_dns.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
+}
+
+# Lets the CI identity ATTACH this UAMI to the edge VM in compute/vm — nothing
+# wider. Not a privilege escalation: CI already holds Contributor on
+# homelab-rg, and the DNS zone lives in homelab-rg, so CI could already write
+# records there directly today. This grant only adds the attach action.
+#
+# Reader is NOT enough here, even though it looks narrower: attaching a UAMI to
+# a VM needs Microsoft.ManagedIdentity/userAssignedIdentities/assign/action,
+# which is a write, not a read. A Reader grant plans clean in compute/vm and
+# then fails at apply with an authorization error that names neither "Reader"
+# nor "assign" — worth getting right here rather than debugging it there.
+resource "azurerm_role_assignment" "ci_edge_identity_operator" {
+  scope                = azurerm_user_assigned_identity.homelab_edge_dns.id
+  role_definition_name = "Managed Identity Operator"
+  principal_id         = azurerm_user_assigned_identity.homelab_github_oidc.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
+}

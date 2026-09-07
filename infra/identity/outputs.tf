@@ -37,3 +37,25 @@ output "granted_scopes" {
     (azurerm_role_assignment.vm_ssh_key_reader.role_definition_name)        = azurerm_role_assignment.vm_ssh_key_reader.scope
   }
 }
+
+# --- Edge DNS identity outputs (E03.3, #39) -------------------------------
+
+output "edge_dns_client_id" {
+  description = "Client ID of Caddy's edge DNS identity — the AZURE_CLIENT_ID fallback if managed-identity auto-selection on the VM is ever ambiguous"
+  value       = azurerm_user_assigned_identity.homelab_edge_dns.client_id
+}
+
+output "edge_dns_uami_id" {
+  description = "Full resource ID of Caddy's edge DNS identity — what compute/vm's identity block attaches"
+  value       = azurerm_user_assigned_identity.homelab_edge_dns.id
+}
+
+# Same purpose as granted_scopes above, kept separate: that output documents
+# the CI identity specifically, this one documents the edge identity Caddy
+# runs as — the two must never be diffed against each other as if one list.
+output "edge_granted_scopes" {
+  description = "Role assignments held by Caddy's edge DNS identity, as role name => scope"
+  value = {
+    (azurerm_role_assignment.edge_dns_zone_contributor.role_definition_name) = azurerm_role_assignment.edge_dns_zone_contributor.scope
+  }
+}

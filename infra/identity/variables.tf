@@ -55,3 +55,20 @@ variable "vm_ssh_key_name" {
   type        = string
   default     = "homelab-vm-ssh-key-2"
 }
+
+# --- Edge DNS identity inputs (E03.3, #39) --------------------------------
+
+variable "edge_uami_name" {
+  description = "Name of the user-assigned managed identity Caddy uses for the Azure DNS-01 challenge"
+  type        = string
+  default     = "homelab-edge-dns-identity"
+}
+
+# Deliberately no default, same reasoning as compute/vm's variable of the same
+# name: _terraform.yml already sets TF_VAR_dns_zone_name for every module (it
+# feeds compute/vm and infra/dns today), so this module picks it up for free
+# with no workflow change — but a local apply must pass it explicitly.
+variable "dns_zone_name" {
+  description = "The Azure DNS Zone name Caddy's edge identity gets DNS Zone Contributor over"
+  type        = string
+}

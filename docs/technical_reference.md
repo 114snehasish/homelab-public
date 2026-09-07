@@ -10,6 +10,8 @@ As I expand the lab, new modules will be added, but these core components provid
 
 ```
 .
+├── apps
+│   └── caddy       # [Deployed manually] The single public edge (#39)
 ├── compute
 │   └── vm          # [Ephemeral] The Workload Node
 ├── infra
@@ -20,6 +22,9 @@ As I expand the lab, new modules will be added, but these core components provid
 │   └── workflows   # CI/CD Pipelines
 └── docs            # Documentation
 ```
+
+`apps/` has no Terraform and no CI pipeline yet (CI deploy is `#40`) — see
+[§6](#6-deployed-layer-apps).
 
 ---
 
@@ -33,7 +38,7 @@ As I expand the lab, new modules will be added, but these core components provid
 - `azurerm_subnet.homelab_subnets`: One subnet per entry in `var.subnets`, keyed by subnet name. Today that map holds exactly one entry — `homelab-subnet` = 10.0.0.0/24, the public tier.
 - `azurerm_network_security_group.homelab_nsg`: The security boundary.
 - `azurerm_network_security_rule.homelab_nsg_rules`: One rule per entry in `var.nsg_rules`, keyed by rule name. Today: `Allow-SSH` at priority 100, `Allow-HTTP` (80) at 110 and `Allow-HTTPS` (443) at 120.
-  - **The VM has public 80/443 exposure** (#37). Both are inbound TCP from `*` because a public web endpoint is the point; 80 is kept open for the ACME HTTP-01 fallback and the redirect to HTTPS, not for serving plaintext. Caddy ([#39](https://github.com/114snehasish/homelab/issues/39)) is the only intended listener on either port — anything else bound there is reachable from the internet the moment it starts.
+  - **The VM has public 80/443 exposure** (#37). Both are inbound TCP from `*` because a public web endpoint is the point; 80 is kept open for the ACME HTTP-01 fallback and the redirect to HTTPS, not for serving plaintext. Caddy ([§6](#6-deployed-layer-apps), `apps/caddy`) is the only intended listener on either port — anything else bound there is reachable from the internet the moment it starts.
 - `azurerm_subnet_network_security_group_association.homelab_nsg_assocs`: One per subnet — the NSG is owned at the subnet layer, per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md).
 
 ### Adding a subnet or a rule
@@ -90,6 +95,13 @@ it (#162), so the key `homelab-edge` reproduces the deployed node's names byte-f
   also what keeps per-app hostnames out of a publicly mirrored zone (risk R6).
 - `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
   *its own* persistent disk, at the entry's `data_disk_lun` (default 10).
+- ↳ `identity` (dynamic block, E03.3 #39): `UserAssigned`, attached only to the `public_edge`
+  instance — the `homelab-edge-dns-identity` UAMI from `infra/identity`, looked up by
+  `data "azurerm_user_assigned_identity" "edge_dns"`. Adding this to an already-deployed VM is an
+  **in-place update**, not a replacement, on this repo's pinned `azurerm ~> 5.0` — confirmed
+  against the real VM (`0 to add, 1 to change, 0 to destroy`; apply completed in 18s, no restart).
+  Gives Caddy (`apps/caddy`) a credential-free path to the DNS-01 challenge; see
+  [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
 
 **No NSG association lives here.** Per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md)
 the subnet is the single owner of NSG policy; the NIC-level association this module used to
@@ -170,8 +182,15 @@ credential CI would need is the thing it creates. See the
 Both credentials use issuer `https://token.actions.githubusercontent.com` and audience
 `api://AzureADTokenExchange`.
 
+- `azurerm_user_assigned_identity.homelab_edge_dns` (`homelab-edge-dns-identity`, E03.3 #39): a
+  second, unrelated UAMI — Caddy's DNS-01 identity, not the CI identity above. No
+  `prevent_destroy`: nothing outside this module references its `client_id`, so recreating it
+  costs one `infra/identity` re-apply, not a repo-variable update. `compute/vm` looks it up by
+  name and attaches it only to the instance with `public_edge = true`. See
+  [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
+
 ### Role assignments (E02.2, #34)
-Three `azurerm_role_assignment`s, each scoped as narrowly as the thing it enables:
+Three `azurerm_role_assignment`s for the CI identity, each scoped as narrowly as the thing it enables:
 
 | Role | Scope | Enables |
 |---|---|---|
@@ -183,6 +202,16 @@ The scopes are located by read-only data sources; nothing outside `homelab-ident
 managed by this module. Two grants are deliberately absent: anything at subscription scope, and
 any role on the *storage account* (which would carry `listKeys`, a bearer credential for every
 container in it — the exact credential class E02 exists to eliminate).
+
+**Two more role assignments, for the edge DNS identity (E03.3, #39):**
+
+| Role | Scope | Principal | Enables |
+|---|---|---|---|
+| `DNS Zone Contributor` | the `az.snehasish-chakraborty.com` zone | `homelab-edge-dns-identity` | Caddy's only Azure right — write and clean up the ACME DNS-01 TXT challenge. |
+| `Managed Identity Operator` | the `homelab-edge-dns-identity` resource | `homelab-github-actions-identity` (the CI identity) | Lets CI's `compute/vm` apply *attach* this identity to the edge VM. Not `Reader`: attaching is the `.../userAssignedIdentities/assign/action` write, which `Reader` does not grant — that gap plans clean and fails only at apply. Not a privilege escalation: CI already holds `Contributor` on `homelab-rg`, which contains the DNS zone. |
+
+Verified against the live subscription after applying: `az role assignment list --assignee
+<edge principal_id> --all` returns exactly the one `DNS Zone Contributor` row.
 
 Because a role assignment lives on the scope it grants, CI can manage `homelab-rg` but could
 never recreate it after a deletion. That is why `destroy.yml` stops short of `infra/network`,
@@ -197,6 +226,12 @@ OIDC credential step. Without it, `terraform init` fails at `listKeys` before va
 are secrets — they are identifiers, which is why E02.3 (#35) moves them into repo **variables**
 rather than repo secrets. `granted_scopes` is the audit surface: diff it against
 `az role assignment list --assignee <principal_id> --all`.
+
+For the edge identity: `edge_dns_client_id`, `edge_dns_uami_id`, `edge_granted_scopes`. Kept as
+separate outputs rather than folded into the ones above — the two identities are unrelated, and
+`granted_scopes` documents the CI identity specifically. `edge_dns_client_id` exists only as the
+`AZURE_CLIENT_ID` fallback for `apps/caddy/.env`, needed if managed-identity auto-selection on the
+VM is ever ambiguous (it is not, today — the VM carries exactly one user-assigned identity).
 
 ### Current state
 Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
@@ -218,7 +253,49 @@ There is still no `deploy-identity.yml`; the module's `.tf` files are covered by
 
 ---
 
-## 6. CI/CD Workflows
+## 6. Deployed Layer: `apps/`
+
+**Purpose**: Compose-as-code apps, deployed to the VM manually today (CI deploy is E03.4, #40).
+Unlike the five modules above, this layer has no Terraform and no state — it is files on the VM's
+`/data` disk plus whatever `docker compose` is currently running. The full pattern and the manual
+deploy runbook live in [`apps/README.md`](../apps/README.md); this section is the reference
+summary.
+
+### `apps/caddy` — the single public edge (E03.3, #39)
+
+- One `docker-compose.yml` service, `caddy`, built from a repo-local `Dockerfile` (the official
+  `caddy` image ships no DNS provider plugins) that adds `caddy-dns/azure` via `xcaddy`. Both
+  stages pin an exact Caddy version — this repo's Dependabot config has no `docker` ecosystem, so
+  nothing else watches that tag.
+- **One wildcard site block** in the Caddyfile — `*.az.snehasish-chakraborty.com` — never a
+  per-app top-level block. Caddy takes a site address literally as a certificate subject; a second
+  block for a specific hostname would request a separate certificate for it, and that hostname
+  would then appear in a public Certificate Transparency log (risk R6, load-bearing since the repo
+  is force-mirrored to a public GitHub repo on every push to `main`). Every app hostname is a
+  `handle` block with a `host` matcher *inside* the one wildcard site instead.
+- **Authenticates to Azure DNS for the ACME DNS-01 challenge as a VM-attached user-assigned
+  managed identity** (`homelab-edge-dns-identity`, §5) — no credential file, no secret, anywhere.
+  See [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md) for why the issue's
+  original Cloudflare-DNS-01 design could not work (`az.snehasish-chakraborty.com` is delegated to
+  Azure DNS, not Cloudflare) and why a managed identity rather than a service-principal secret.
+- Certs and the ACME account persist at `/data/caddy` on the VM's data disk — survives a
+  `docker compose down && up`, and is intended to survive a VM recreate once #99's mount contract
+  lands (verification of that specific claim is #99's work, not this issue's).
+- Joins the shared external Docker network `web`, created once per VM
+  (`docker network create web`) and joined by every app Caddy proxies to — not owned by any single
+  app's compose file.
+
+### Deviation from the roadmap's stated ordering
+
+`docs/roadmap.md` states E15's disk migration (#98) and mount contract (#99) should land before
+this issue, since Caddy is the first thing to write real state to `/data`. This issue shipped
+first instead — the disk was still near-empty at deploy time, and the roadmap now carries the
+mitigation this decision depends on: #98's snapshot-swap runbook must stop `apps/caddy` before
+snapshotting, so the swap never captures a live ACME writer mid-write.
+
+---
+
+## 7. CI/CD Workflows
 
 ### Per-module pipelines
 

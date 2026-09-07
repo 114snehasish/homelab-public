@@ -1,0 +1,46 @@
+# Caddy is the single public edge for the whole homelab (ADR-0012, ADR-0013).
+# It terminates TLS with ONE wildcard certificate for *.az.snehasish-
+# chakraborty.com and routes every app hostname from inside this one site
+# block — never as its own top-level block.
+#
+# THIS IS THE R6-CRITICAL RULE: Caddy takes a site address literally as a
+# certificate subject name. A second top-level block like
+# `homepage.az.snehasish-chakraborty.com { ... }` would make Caddy request a
+# SEPARATE certificate for that exact hostname, and that hostname would then
+# appear in a public Certificate Transparency log — the exact per-app
+# enumeration the wildcard cert/DNS pair exists to prevent, on a repo that is
+# force-mirrored to the public internet on every push to main. Every new app
+# gets a `handle` block inside this site, keyed by a host matcher — never a
+# new site block of its own.
+*.az.snehasish-chakraborty.com {
+	tls {
+		dns azure {
+			subscription_id {env.AZURE_SUBSCRIPTION_ID}
+			resource_group_name {env.AZURE_DNS_RESOURCE_GROUP}
+			# tenant_id / client_id / client_secret deliberately absent: when
+			# all three are empty, libdns/azure falls back to the VM's attached
+			# user-assigned managed identity (infra/identity's
+			# homelab-edge-dns-identity, granted DNS Zone Contributor on this
+			# zone only) instead of a credential on disk. Verified end-to-end
+			# before this file was written: a container on this compose
+			# stack's `web` network can reach the IMDS token endpoint and
+			# receive a real ARM access token for that identity.
+		}
+	}
+
+	# Placeholder route proving the edge itself: obtains the cert, serves
+	# valid TLS, and confirms the wildcard covers a name nothing else defines.
+	# Real apps add their own `handle` block below this one, each with a
+	# `host` matcher for its own subdomain — see apps/README.md.
+	@edge_test host test.az.snehasish-chakraborty.com
+	handle @edge_test {
+		respond "caddy edge ok" 200
+	}
+
+	# Falls through here when no handle above matches — i.e. an app hostname
+	# that resolves (wildcard DNS answers for anything) but has no route
+	# defined yet. 404, not a silent proxy to nowhere.
+	handle {
+		respond "no route configured for this host" 404
+	}
+}

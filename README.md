@@ -36,6 +36,10 @@ I have put comprehensive documentation under the `docs/` directory to help you u
   CIDR allocation for the VNet, who owns the NSG, and the test a workload has to pass
   before it earns its own VM.
 
+- **[🌐 Apps Layer Runbook](apps/README.md)**  
+  The compose-as-code pattern for everything running behind Caddy, and the manual deploy
+  procedure — CI deploy for this layer doesn't exist yet.
+
 ## 🚀 Quick Start (The Base Layer)
 
 ### Prerequisites
@@ -114,6 +118,16 @@ To lay this foundation, I deploy the modules in this specific dependency order:
     cd ../../compute/vm
     terraform init
     terraform apply
+    ```
+
+6.  **Apps** (`apps/`) — *deployed manually, not by Terraform*
+    Caddy, the single public edge, plus every app behind it. No CI deploy for this layer yet
+    (that's E03.4) — `rsync` + `docker compose up -d` by hand for now. Full procedure in the
+    **[🌐 Apps Layer Runbook](apps/README.md)**.
+    ```bash
+    ssh azureuser@<public_ip> 'docker network create web'
+    rsync -av apps/caddy/ azureuser@<public_ip>:/home/azureuser/apps/caddy/
+    ssh azureuser@<public_ip> 'cd apps/caddy && docker compose up -d --build'
     ```
 
 ### Verification
