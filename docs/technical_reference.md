@@ -81,6 +81,13 @@ it (#162), so the key `homelab-vm` reproduces the deployed node's names byte-for
 - `azurerm_public_ip.vm_public_ip`: `${instance}-public-ip`.
 - ↳ `os_disk`: `${instance}-osdisk`.
 - `azurerm_dns_a_record.vm_record`: the A record the VM registers for itself, labelled `${instance}`.
+- `azurerm_dns_a_record.wildcard_record`: the zone-wide `*` alias, created only for the node
+  flagged `public_edge = true` in `fleet.tfvars` (at most one, enforced by a `validation` block
+  on `var.instances`). It lives in this module rather than `infra/dns` because an alias record
+  needs the public IP's *resource ID*, and a data-source lookup in `infra/dns` would fail on
+  every plan while `destroy.yml` has this module torn down — the #124 failure mode. Alias, not
+  a literal IP, so a VM recreate re-points `*` in Azure with no Terraform run. One wildcard is
+  also what keeps per-app hostnames out of a publicly mirrored zone (risk R6).
 - `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
   *its own* persistent disk, at the entry's `data_disk_lun` (default 10).
 

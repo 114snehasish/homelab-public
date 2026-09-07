@@ -6,7 +6,8 @@
 # no new concurrency group, no destroy.yml leg.
 #
 # Read by two modules through _terraform.yml's `var_file` input:
-#   compute/vm     -> -var-file=../../fleet.tfvars   (VM, NIC, public IP, DNS A record, disk attachment)
+#   compute/vm     -> -var-file=../../fleet.tfvars   (VM, NIC, public IP, DNS A record,
+#                                                  wildcard `*` record, disk attachment)
 #   infra/storage  -> -var-file=../fleet.tfvars      (one persistent data disk per node)
 # Each module declares only the attributes it consumes and Terraform silently
 # drops the rest, which is what lets one file serve both. The flip side: a
@@ -29,5 +30,11 @@ instances = {
     # of the one resource that must never die. prevent_destroy turns that into
     # a plan error rather than data loss, but the pin is what avoids it.
     disk_name = "homelab-data-disk"
+
+    # The sole public edge (ADR-0012): the wildcard `*.az` record aliases to this
+    # node's public IP, so every app hostname resolves to Caddy without ever
+    # being enumerated in the zone (risk R6). Exactly one node may set this —
+    # compute/vm's `instances` validation fails the plan otherwise.
+    public_edge = true
   }
 }
