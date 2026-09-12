@@ -63,6 +63,15 @@ new keys fall back to `${instance}-data-disk`. The two modules are linked by nam
 `terraform_remote_state`: `compute/vm` looks its disk up through a data source, so the fallback
 pattern must stay identical on both sides.
 
+**The disks live in `homelab-persist-rg`, not `homelab-rg`** (E15.2,
+[#98](https://github.com/114snehasish/homelab/issues/98)) — ADR-0009's first principle is that
+nothing precious shares a resource group with anything destroyable. The group is created out-of-band
+by `scripts/bootstrap-persist-rg.sh` and only ever read here. The variable is `disk_rg_name`, not
+`rg_name`, deliberately: `infra/network` and `compute/vm` both declare `rg_name` meaning
+`homelab-rg`, and a repo-wide `TF_VAR_rg_name` would otherwise repoint the pet disk silently — the
+same collision `infra/dns` hit and solved by renaming. `compute/vm` declares the same name with the
+same default, and a data-disk attachment works across resource groups as long as the region matches.
+
 **Purpose**: Manages the persistent data assets. This is the "Vault" of my architecture.
 
 ### Resources
@@ -469,7 +478,7 @@ drift, until #54 (E06.4) removes the ipify data source.
 ### Overall pipelines
 
 - **`deploy.yml`** (manual dispatch): calls the five per-module workflows in dependency order — network → dns → cloudflare → storage → compute — with `secrets: inherit`. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.
-- **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**: the disk lives inside `homelab-rg`, so the network module cannot be destroyed while the disk exists, and the remaining VNet/subnet/NSG/RG are free; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only. Since #153 both of its jobs are thin `uses:` callers of `_terraform.yml`, identical in shape to a `deploy-*.yml` job except for `destroy: true` — so destroy runs at the `.terraform-version` pin, runs `terraform validate`, and shares the deploy path's single OIDC auth step and apply gate rather than duplicating them.
+- **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**. The reason for sparing network changed at E15.2 ([#98](https://github.com/114snehasish/homelab/issues/98)), exactly as ADR-0009 §5 anticipated — the disk moved to `homelab-persist-rg`, so "the network module cannot be destroyed while the disk exists" no longer applies; what remains is that the VNet/subnet/NSG/RG are free to leave up, and that the DNS zone in `homelab-rg` is read by name via data sources with no tolerance for absence; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only. Since #153 both of its jobs are thin `uses:` callers of `_terraform.yml`, identical in shape to a `deploy-*.yml` job except for `destroy: true` — so destroy runs at the `.terraform-version` pin, runs `terraform validate`, and shares the deploy path's single OIDC auth step and apply gate rather than duplicating them.
 
 Both overall pipelines share the `homelab-terraform` concurrency group so a deploy and a destroy can never run at the same time. That group is workflow-level; each `_terraform.yml` job additionally takes the per-module `tf-<working_directory>` group, which is what actually leases the module's state blob — destroy included, as of #153.
 

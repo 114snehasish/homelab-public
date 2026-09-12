@@ -73,6 +73,22 @@ variable "ssh_key_name" {
   default = "homelab-vm-ssh-key-2"
 }
 
+# Same name, same default and same meaning as infra/storage's variable of the
+# same name (E15.2, #98) — that module creates the disk there, this one looks it
+# up by name. Deliberately distinct from rg_name above: the VM is cattle and
+# lives in homelab-rg, the disk is a pet and lives in a group that is created
+# out-of-band and never Terraform-managed (ADR-0009 §2).
+#
+# A plain string, never a data "azurerm_resource_group": the CI identity's custom
+# role over that group is exactly disks/read + disks/write, with no
+# Microsoft.Resources/subscriptions/resourceGroups/read — a data source there
+# fails CI at *plan* with AuthorizationFailed naming that action.
+variable "disk_rg_name" {
+  description = "Resource group holding the persistent data disks, created out-of-band by scripts/bootstrap-persist-rg.sh"
+  type        = string
+  default     = "homelab-persist-rg"
+}
+
 variable "dns_zone_name" {
   description = "The Azure DNS Zone name"
   type        = string

@@ -3,8 +3,12 @@ name: Destroy Homelab Infrastructure
 # Tears down billable compute in reverse dependency order:
 # compute/vm -> infra/cloudflare.
 # infra/storage is never touched (persistent data disk, prevent_destroy).
-# infra/network is never touched: the disk lives inside homelab-rg, so the
-# RG cannot be destroyed while the disk exists; VNet/subnet/NSG cost nothing.
+# infra/network is never touched. The reason changed at E15.2 (#98), as
+# ADR-0009 section 5 predicted: the disk moved to homelab-persist-rg, so
+# "the RG cannot be destroyed while the disk exists" is no longer why. What
+# remains is that VNet/subnet/NSG/RG cost nothing to leave up, and the DNS
+# zone in homelab-rg is read by name via data sources in infra/cloudflare
+# and compute/vm with no tolerance for absence (#124).
 # infra/dns is never touched either: the zone is a flat ~$0.52/month
 # regardless of usage, not worth tearing down every cycle, and destroying it
 # breaks infra/cloudflare's and compute/vm's data-source lookups by name

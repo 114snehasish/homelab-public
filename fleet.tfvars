@@ -8,7 +8,7 @@
 # Read by two modules through _terraform.yml's `var_file` input:
 #   compute/vm     -> -var-file=../../fleet.tfvars   (VM, NIC, public IP, DNS A record,
 #                                                  wildcard `*` record, disk attachment)
-#   infra/storage  -> -var-file=../fleet.tfvars      (one persistent data disk per node)
+#   infra/storage  -> -var-file=../../fleet.tfvars   (one persistent data disk per node)
 # Each module declares only the attributes it consumes and Terraform silently
 # drops the rest, which is what lets one file serve both. The flip side: a
 # misspelled attribute is ignored rather than rejected — read the plan.
