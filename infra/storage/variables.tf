@@ -1,6 +1,18 @@
-variable "rg_name" {
-  type    = string
-  default = "homelab-rg"
+# Deliberately NOT `rg_name`, and deliberately not just a changed default on it:
+# infra/network and compute/vm both declare `rg_name` meaning `homelab-rg`, and
+# CLAUDE.md records what a shared TF_VAR_* of that name already did to infra/dns
+# under its old name. This module's group is a different group with a different
+# lifetime — the pet disk's home, created out-of-band by
+# scripts/bootstrap-persist-rg.sh and never Terraform-managed (ADR-0009 §2) — so
+# it gets a name of its own, and a future repo-wide TF_VAR_rg_name can never
+# silently repoint the one resource that must outlive everything else.
+#
+# compute/vm declares the same name, same default and same meaning: that module
+# looks the disk up by name through a data source, so the two have to agree.
+variable "disk_rg_name" {
+  description = "Resource group holding the persistent data disks: homelab-persist-rg, created out-of-band and only ever read by Terraform (E15.2, #98)"
+  type        = string
+  default     = "homelab-persist-rg"
 }
 
 variable "location" {

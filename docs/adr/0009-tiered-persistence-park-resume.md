@@ -1,6 +1,6 @@
 # ADR-0009: Tiered persistence and the park/resume lifecycle
 
-- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account).
+- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap).
 - **Date**: 2026-09-08
 - **Deciders**: repo owner
 - **Related**: [#96](https://github.com/114snehasish/homelab/issues/96) (E15, parent) · [#97](https://github.com/114snehasish/homelab/issues/97) (this ADR) · [#205](https://github.com/114snehasish/homelab/issues/205) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#100](https://github.com/114snehasish/homelab/issues/100) · [#101](https://github.com/114snehasish/homelab/issues/101) · [#102](https://github.com/114snehasish/homelab/issues/102) · [#206](https://github.com/114snehasish/homelab/issues/206) · [#207](https://github.com/114snehasish/homelab/issues/207) · [#103](https://github.com/114snehasish/homelab/issues/103) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [ADR-0013](0013-caddy-edge-dns01-provider-and-credential-model.md) · [#20](https://github.com/114snehasish/homelab/issues/20) (E07) · [#164](https://github.com/114snehasish/homelab/issues/164) · [#165](https://github.com/114snehasish/homelab/issues/165) · [#54](https://github.com/114snehasish/homelab/issues/54) (E06) · [#124](https://github.com/114snehasish/homelab/issues/124)
@@ -107,6 +107,45 @@ inherits them rather than discovering them:
 - **CLAUDE.md's *Never touch* entry for `listeninfratfstatesa` now names all of its containers**, so
   the next person granting access to one can see what else is in the blast radius.
 
+#### Amendment (2026-09-12, #98) — the migration was a resource-group move, not a snapshot-swap
+
+**`#98` specified a snapshot-swap: `az snapshot create` → create a new disk from the snapshot in the
+persist RG → detach/attach → verify → delete the old disk. It was executed instead as a single
+`az resource move` of the existing disk object.** The snapshot was still taken, as the rollback
+artifact, and retained 7 days.
+
+The reason is a Terraform property the original plan did not account for. **`create_option` is
+ForceNew *and* is read back from Azure** — the provider's read sets it from
+`creationData.CreateOption`. A disk created from a snapshot reads back `"Copy"`, while
+`infra/storage` declares `"Empty"`, so the post-import plan wants a destroy-and-recreate and
+`prevent_destroy` turns that into a hard `Instance cannot be destroyed` error. (This was reproduced
+deliberately before the move, and it is the same class of failure the 2026-09-08 review predicted for
+the RG change itself.) Escaping it would have meant either an `ignore_changes` on a Required
+attribute or a per-instance `source_resource_id` knob — a permanent scar in the module recording a
+one-off migration.
+
+A resource-group move has none of that. It is pure control-plane metadata: `Microsoft.Compute/disks`
+is movable, the region does not change, and the disk object, its bytes, its `uniqueId`
+(`4f243f04-…`) and its `timeCreated` (2026-09-07) are all preserved — verified before and after.
+`create_option` stays `"Empty"`, so the post-import plan is genuinely `No changes.` The Terraform
+seam is still manual, because the ARM ID embeds the resource group: `terraform state rm` then
+`terraform import` at the new id, which is the one window where the disk is unmanaged.
+
+**Three conditions made this the cheap option, and they are worth stating because they will not all
+hold next time.** The disk was **unattached** — the lab was parked, and an attached disk can only
+move together with its VM. Neither resource group carried a lock. And nothing else was running
+against either group, which a move write-locks for its duration (~3 minutes here).
+
+**Two consequences for the rest of E15:**
+
+- **There is no old disk to delete.** `#98`'s closing step and the note that CI deliberately lacks
+  `Microsoft.Compute/disks/delete` both become moot for this migration — nothing was left behind but
+  the rollback snapshot.
+- **The `docker compose down` gate in §5 and the roadmap's E15/E03 ordering note did not apply.**
+  That step exists so a snapshot is never taken under a live ACME writer; with the lab parked there
+  was no VM, no running Caddy and no writer. It remains the correct instruction for any migration
+  performed against a running node.
+
 This was chosen over creating them in `infra/identity` (local Owner apply) or `infra/storage` (CI):
 
 - **`prevent_destroy` is a guardrail inside Terraform, and it is one commit deep.** A resource
@@ -207,10 +246,15 @@ against `blkid` on the device actually mounted at `mount`.
 
 Three consequences that would otherwise be found the hard way:
 
-- **`#98`'s snapshot-swap passes the guard unchanged, by construction.** A snapshot preserves the
-  filesystem, so `fs_uuid` is identical across the swap; the new disk keeps the name
-  `homelab-data-disk`, and the node is the same. The migration therefore needs one added runbook step
-  — **write the marker** onto the already-formatted disk before the swap — and nothing else.
+- **`#98`'s migration passes the guard unchanged, by construction.** This was written of a
+  snapshot-swap — a snapshot preserves the filesystem, so `fs_uuid` survives it — and holds *more*
+  strongly for the resource-group move `#98` actually performed: nothing was copied at all, so the
+  filesystem, its UUID, the disk name `homelab-data-disk` and the node are all literally unchanged.
+  The migration therefore needs one added runbook step — **write the marker** onto the
+  already-formatted disk — and nothing else. Because the lab was parked for the move, that step runs
+  *after* the disk is reattached and mounted rather than before, reading `fs_uuid` from `blkid` and
+  `instance`/`disk_name` from live IMDS. `scripts/write-persist-marker.sh` is that writer, and
+  `#99`'s format path should call it with `--created-by cloud-init` rather than reimplement it.
 - **A restore to a fresh disk ([#206](https://github.com/114snehasish/homelab/issues/206)) fails the
   guard on purpose.** The restored marker carries the old `fs_uuid`; the new filesystem has a new
   one. So the contract includes a documented **re-bless** step that rewrites the marker from live

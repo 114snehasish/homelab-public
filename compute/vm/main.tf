@@ -27,10 +27,14 @@ data "azurerm_subnet" "subnet" {
 # One disk per instance, created by infra/storage from the same fleet map. The
 # fallback name must match infra/storage's — they are two root modules linked by
 # naming convention, not by terraform_remote_state (see CLAUDE.md).
+#
+# var.disk_rg_name, not var.rg_name (E15.2, #98): the disks moved to
+# homelab-persist-rg and the VM did not. A data disk attachment is happy across
+# resource groups — same region is the only constraint, and both are southindia.
 data "azurerm_managed_disk" "data_disk" {
   for_each            = var.instances
   name                = coalesce(each.value.disk_name, "${each.key}-data-disk")
-  resource_group_name = var.rg_name
+  resource_group_name = var.disk_rg_name
 }
 
 data "azurerm_ssh_public_key" "existing_ssh" {
@@ -104,17 +108,6 @@ resource "azurerm_dns_a_record" "wildcard_record" {
   resource_group_name = var.dns_rg_name
   ttl                 = 300
   target_resource_id  = azurerm_public_ip.vm_public_ip[each.key].id
-}
-
-# TODO: same one-shot rename fixup as infra/storage's moved block. Delete once
-# `terraform -chdir=compute/vm apply` has run and state shows
-# wildcard_record["homelab-edge"] — not a standing record of the rename, just the
-# state-address side of the homelab-vm -> homelab-edge move. This record's own
-# `name` is the literal "*", not derived from the key, so without this block it
-# would otherwise be destroyed and recreated for no reason beyond the key change.
-moved {
-  from = azurerm_dns_a_record.wildcard_record["homelab-vm"]
-  to   = azurerm_dns_a_record.wildcard_record["homelab-edge"]
 }
 
 resource "azurerm_network_interface" "vm_nic" {
