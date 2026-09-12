@@ -18,6 +18,7 @@ As I expand the lab, new modules will be added, but these core components provid
 │   ├── identity    # [Control plane] CI's Azure identity (bootstrapped locally)
 │   ├── network     # [Persistent] The Network Backbone
 │   └── storage     # [Persistent] The Data Layer
+├── scripts         # [Out-of-band] az bootstrap, deliberately not Terraform (ADR-0009 §2)
 ├── .github
 │   └── workflows   # CI/CD Pipelines
 └── docs            # Documentation
@@ -189,19 +190,58 @@ Both credentials use issuer `https://token.actions.githubusercontent.com` and au
   name and attaches it only to the instance with `public_edge = true`. See
   [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
 
-### Role assignments (E02.2, #34)
-Three `azurerm_role_assignment`s for the CI identity, each scoped as narrowly as the thing it enables:
+### Role assignments (E02.2, #34; extended by E15.0, #205)
+The CI identity holds **five** role assignments, each scoped as narrowly as the thing it enables.
+Four are listed here; the fifth, `Managed Identity Operator`, is in the edge-identity table below
+because that is where its scope lives — but it is a CI grant and `granted_scopes` counts it.
 
 | Role | Scope | Enables |
 |---|---|---|
 | `Contributor` | RG `homelab-rg` | Every resource the five modules deploy. |
 | `Storage Blob Data Contributor` | the `tfstate` container in `listeninfratfstatesa` | State read/write plus the blob lease Terraform uses as its lock. |
 | `Reader` | the `homelab-vm-ssh-key-2` resource in `do-not-delete` | `compute/vm`'s SSH-key data source — one resource, not the RG around it. |
+| `Homelab Persist Disk Writer` (custom) | RG `homelab-persist-rg` | `infra/storage` creates and refreshes the pet disk; `compute/vm` attaches it. See below. |
 
 The scopes are located by read-only data sources; nothing outside `homelab-identity-rg` is ever
 managed by this module. Two grants are deliberately absent: anything at subscription scope, and
 any role on the *storage account* (which would carry `listKeys`, a bearer credential for every
-container in it — the exact credential class E02 exists to eliminate).
+container in it — the exact credential class E02 exists to eliminate). That account holds three
+containers — `tfstate`, `secret-files`, and `restic` once E15.4 (#100) lands — so the
+container-scope rule is load-bearing rather than stylistic.
+
+### Custom role definition (E15.0, #205)
+
+`azurerm_role_definition.persist_disk_writer` is the repo's **first and only custom role**. It
+exists because Azure ships no `Disk Contributor`: the disk-named built-ins (`Disk Backup Reader`,
+`Disk Pool Operator`, `Disk Restore Operator`, `Disk Snapshot Contributor`, `Data Operator for
+Managed Disks`) cannot create a managed disk, and the ones that can — `Virtual Machine Contributor`,
+`Contributor` — re-widen exactly what ADR-0009 §2 narrows.
+
+```hcl
+actions           = ["Microsoft.Compute/disks/read", "Microsoft.Compute/disks/write"]
+not_actions       = []
+assignable_scopes = [<homelab-persist-rg>]
+```
+
+`Microsoft.Compute/disks` has exactly five management-plane operations, so this is precisely the
+non-destructive half. **`write` is load-bearing twice**: `infra/storage` creates the disk with it,
+and `compute/vm` *attaches* it with it — attaching sets the disk's `managedBy` property, and Azure
+has no `disks/join/action` the way it does for subnets and NICs. Scoped to the RG rather than the
+disk because a role assignment's scope must already exist and a new fleet node's disk does not yet.
+
+Deliberately omitted: `disks/delete` (a delete happens only on `destroy`, which `prevent_destroy`
+already refuses — leaving it out makes retiring a disk a local-owner act); `disks/beginGetAccess`
+and `/endGetAccess` (they mint a disk SAS URI, i.e. read the bytes); and
+`Microsoft.Resources/subscriptions/resourceGroups/read` (nothing reads the group today — the
+symptom if something ever does is an `AuthorizationFailed` at *plan* naming that exact action).
+
+Two implementation rules that are easy to get wrong and are documented in CLAUDE.md's Gotchas: the
+assignment references the role by `role_definition_id = …role_definition_resource_id`, never by
+`role_definition_name` (which the provider resolves for built-in roles only, via a tenant-wide
+filtered List that races RBAC propagation) and never by `.id` (which is `"{guid}|{scope}"`). The
+group itself is **not managed here** — `scripts/bootstrap-persist-rg.sh` creates it out-of-band and
+this module reads it, so the definition and its assignment both die with the group if it is ever
+deleted.
 
 **Two more role assignments, for the edge DNS identity (E03.3, #39):**
 
@@ -222,10 +262,16 @@ account keys — `ARM_USE_AZUREAD=true`, set alongside `ARM_USE_OIDC=true` in `_
 OIDC credential step. Without it, `terraform init` fails at `listKeys` before validate runs.
 
 ### Outputs
-`client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`, `granted_scopes`. None
-are secrets — they are identifiers, which is why E02.3 (#35) moves them into repo **variables**
-rather than repo secrets. `granted_scopes` is the audit surface: diff it against
-`az role assignment list --assignee <principal_id> --all`.
+`client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`, `granted_scopes`,
+`persist_disk_role_definition_id`. None are secrets — they are identifiers, which is why E02.3 (#35)
+moves them into repo **variables** rather than repo secrets. `granted_scopes` is the audit surface:
+diff it against `az role assignment list --assignee <principal_id> --all`; it now carries five
+entries, having been silently missing `Managed Identity Operator` (E03.3) until E15.0 — which meant
+the diff it exists to support had a spurious extra row on the Azure side. Its last key comes from
+the role *definition*'s `name`, not the assignment's
+`role_definition_name` — that attribute is Computed and unknown at plan time, and an unknown map
+**key** renders the entire output as `(known after apply)`, hiding the other three rows in exactly
+the plan you want to read them in.
 
 For the edge identity: `edge_dns_client_id`, `edge_dns_uami_id`, `edge_granted_scopes`. Kept as
 separate outputs rather than folded into the ones above — the two identities are unrelated, and

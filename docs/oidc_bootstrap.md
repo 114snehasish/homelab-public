@@ -24,6 +24,11 @@ There is deliberately **no `deploy-identity.yml`**. The five module workflows st
 | Role assignment | `Contributor` on `homelab-rg` |
 | Role assignment | `Storage Blob Data Contributor` on the `tfstate` container |
 | Role assignment | `Reader` on the `homelab-vm-ssh-key-2` resource |
+| Role **definition** (custom) | `Homelab Persist Disk Writer`, scoped to `homelab-persist-rg` |
+| Role assignment | `Homelab Persist Disk Writer` on `homelab-persist-rg` |
+
+It does **not** create `homelab-persist-rg` itself — that is [step 0c](#0c--create-the-persist-resource-group), an
+out-of-band script, for the reasons ADR-0009 §2 gives.
 
 Both credentials use issuer `https://token.actions.githubusercontent.com` and audience
 `api://AzureADTokenExchange`.
@@ -51,6 +56,11 @@ The azurerm 5.x provider defaults `resource_provider_registrations = "none"` (se
 Terraform will **not** register this for you. Skipping this step fails the apply with an error
 that talks about an unsupported API version rather than a missing registration.
 
+This covers `Microsoft.ManagedIdentity` only. `Microsoft.Compute` — needed because `infra/storage`
+puts a managed disk in the persist RG — is checked by the step 0c script for the same reason.
+`Microsoft.Authorization`, behind the custom role definition, needs nothing: it is a core provider,
+always registered, and cannot be unregistered.
+
 ### 0b — confirm whoever applies this can hand out roles
 
 ```bash
@@ -71,6 +81,33 @@ this module failed with a 403 on `roleAssignments/write`. So step 1 below applie
 > is kept because it is still the right check to run against *whatever* identity you are about
 > to apply as — substitute your own principal. "Cannot create role assignments" was the last
 > confirmed entry in the inventory #36 took before retiring the credential.
+
+### 0c — create the persist resource group
+
+```bash
+./scripts/bootstrap-persist-rg.sh
+```
+
+Creates `homelab-persist-rg` in `southindia` and nothing else — no storage account, no container.
+Idempotent: a second run reports that the group already exists and leaves it untouched (deliberately
+*not* a re-`PUT`, because `az group create --tags` replaces the whole tag map and would strip
+anything added out of band). It hard-fails if the group already exists in a different region, since
+an RG's location is immutable and a managed disk must be co-regional with the VM that attaches it.
+
+**Why this is a script and not Terraform.** ADR-0009 §2: this resource group holds the one thing in
+the lab that must outlive every other thing in it. `prevent_destroy` is a guardrail *inside*
+Terraform and it is one commit deep, whereas a resource Terraform never manages cannot be destroyed
+by editing HCL at all. It joins RG `do-not-delete` and `listeninfratfstatesa` on CLAUDE.md's *Never
+touch* list — with the one improvement that those have no script and this one does, so the RG stays
+reproducible from the repo. Out-of-band means *not Terraform-managed*, not *undocumented*.
+
+**Why it runs before step 1, not after.** `infra/identity` reads this group through
+`data "azurerm_resource_group" "homelab_persist"` and scopes the custom role definition to it. Skip
+this step and the apply fails at **plan** — before touching anything — with a "Resource Group
+... was not found" error naming `homelab-persist-rg`. That is the ordering signal working.
+
+It needs a subscription-level write, which is exactly what CI does not have, and is why #205 exists
+as a local bootstrap at all.
 
 ## Step 1 — apply locally
 
@@ -104,17 +141,20 @@ credential. Your account needs Owner or User Access Administrator over the three
 ```bash
 cd infra/identity
 terraform init
-terraform plan     # from scratch: 7 to add, 0 to change, 0 to destroy
+terraform plan     # from scratch: 12 to add, 0 to change, 0 to destroy
 terraform apply
 ```
 
-No `terraform.tfvars` is needed — every variable has a default.
+`dns_zone_name` is the one variable with no default (same reasoning as `compute/vm`'s variable of
+that name), so a local apply must pass it: `-var="dns_zone_name=az.snehasish-chakraborty.com"`.
+Every other variable defaults, and no `terraform.tfvars` is needed.
 
-Seven resources: the RG, the UAMI, two federated credentials, three role assignments. On a
-subscription where E02.1 already applied, only the three role assignments are new. Whatever the
-count, the plan must show **0 to change and 0 to destroy** — `listeninfratfstatesa`, RG
-`do-not-delete` and the SSH key are read through data sources and must never appear as managed
-resources.
+Twelve resources: the RG, **two** UAMIs (CI and Caddy's edge DNS identity), two federated
+credentials, **four** role assignments and **one custom role definition**. On a subscription where
+earlier phases already applied, only the new ones appear — E15.0 (#205) adds two, the role
+definition and its assignment. Whatever the count, the plan must show **0 to change and 0 to
+destroy**: `listeninfratfstatesa`, RG `do-not-delete`, the SSH key, the DNS zone and
+`homelab-persist-rg` are read through data sources and must never appear as managed resources.
 
 ### The service-principal path is gone
 
@@ -139,6 +179,13 @@ variables fail at *authentication* instead, since the secret they carry is no lo
 different error, same root cause. Fix it the same way: `az login`, run the `unset` above, re-run
 `terraform apply`. The partial apply is not a problem:
 Terraform recorded what it created, and the re-run adds only the three role assignments.
+
+**A second, unrelated failure, new with E15.0 (#205):** the apply creates the custom role definition
+and the assignment that references it in one pass. Terraform orders them correctly — the assignment
+depends on the definition's `role_definition_resource_id` — but Azure RBAC is eventually consistent,
+so a first apply can still die on the assignment with a role-definition-not-found error. Re-running
+`terraform apply` is the whole fix. Note that `skip_service_principal_aad_check` does **not** help
+here: it covers *principal* replication, not *definition* replication.
 
 ## Step 2 — record the outputs
 
@@ -168,12 +215,39 @@ az role assignment list --assignee <principal_id> --all \
   --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
 
-Exactly three rows, matching `terraform output granted_scopes`. **Nothing at subscription
+Exactly five rows, matching `terraform output granted_scopes`. **Nothing at subscription
 scope** — a `/subscriptions/<id>` scope with no resource group after it means something granted
 this identity far more than #34 intends; find out what before going near #35.
 
+> `Managed Identity Operator` (E03.3, #39) was missing from `granted_scopes` until E15.0 (#205),
+> so this comparison used to show a spurious extra row on the Azure side. If you are reading an
+> older checkout, that is why.
+
 > Before #34, this command had to return *nothing at all* — that was E02.1's acceptance
 > criterion, and it is what makes the E02.1 checkpoint safely inert.
+
+Then assert what the custom role from E15.0 (#205) actually permits — the fourth row above says the
+identity holds it, this says what holding it is worth:
+
+```bash
+az role definition list --custom-role-only true \
+  --scope "$(az group show -n homelab-persist-rg --query id -o tsv)" \
+  --name "Homelab Persist Disk Writer" \
+  --query "[0].{actions:permissions[0].actions, notActions:permissions[0].notActions, assignable:assignableScopes}" \
+  -o json
+```
+
+Expect exactly two `actions` (`Microsoft.Compute/disks/read` and `/write`), an empty `notActions`,
+and a single `assignableScopes` entry — the persist RG. Any wildcard, any third action, or a broader
+assignable scope means the role has drifted from what ADR-0009 §2 pins.
+
+> **What this does and does not prove.** It proves the *definition* grants only those two actions,
+> which is the strongest statement available locally: the UAMI can only be assumed from a GitHub
+> Actions run, and `oidc-smoke.yml` — which used to assert the negatives behaviourally — was deleted
+> in #35. The **behavioural** proof that CI cannot delete a disk or the RG arrives with E15.2 (#98),
+> the first change that makes CI touch this resource group at all. Reviving the deleted
+> `negative-access` job as a dispatch-only workflow is the cheap durable fix; it is recoverable
+> verbatim from git history.
 
 ## Step 4 — the RBAC grants (E02.2)
 
@@ -182,14 +256,29 @@ this identity far more than #34 intends; find out what before going near #35.
 | `Contributor` | RG `homelab-rg` | Manage every resource the five modules deploy — VNet, NSG, DNS zone, disk, VM. The lab's entire blast radius, and no wider. |
 | `Storage Blob Data Contributor` | `…/listeninfratfstatesa/blobServices/default/containers/tfstate` | Read, write and lease (state lock) the `homelab.<module>.tfstate` blobs. |
 | `Reader` | `…/do-not-delete/providers/Microsoft.Compute/sshPublicKeys/homelab-vm-ssh-key-2` | `compute/vm` reads this key by name; without it, every VM plan fails on the data source. |
+| `Homelab Persist Disk Writer` (custom, E15.0 #205) | RG `homelab-persist-rg` | `infra/storage` creates and refreshes the pet disk there, and `compute/vm` attaches it. There is no built-in role that fits: Azure ships no `Disk Contributor`, and the alternatives (`Virtual Machine Contributor`, `Contributor`) re-widen exactly what this narrows. |
 
 What is deliberately **not** granted, and why it matters:
 
 - **No role on the storage account** — only on one container inside it. An account-scoped role
   brings `listKeys`, and a storage account key is a bearer credential for every container in
-  the account. That is the class of credential this epic exists to delete.
+  the account. That is the class of credential this epic exists to delete. Note the account holds
+  three containers (`tfstate`, `secret-files`, and `restic` once #100 lands), so this is not a
+  hypothetical distinction.
 - **No read over RG `do-not-delete`** — the SSH key grant is scoped to the single key resource,
   not the RG that happens to hold it.
+- **No `Microsoft.Compute/disks/delete`** — CI never needs it. A delete happens only on `destroy`,
+  and `infra/storage`'s `prevent_destroy` already refuses. Leaving it out makes retiring a disk a
+  deliberate local-owner act and demotes `prevent_destroy` from the only guard to belt-and-braces.
+- **No `Microsoft.Compute/disks/beginGetAccess` or `/endGetAccess`** — those mint a disk SAS URI,
+  i.e. read the bytes. The worst single action to hand a CI credential over the one disk holding
+  every live database in the lab.
+- **No `Microsoft.Resources/subscriptions/resourceGroups/read` on the persist RG** — nothing needs
+  it today: `infra/storage` passes the group name as a plain string, and `compute/vm`'s only
+  resource-group data source points at `homelab-rg`. If a future module adds
+  `data "azurerm_resource_group"` over the persist RG it fails at *plan* with `AuthorizationFailed`
+  naming that exact action, and the fix is one more entry in the role's `actions` list — not a
+  wider role.
 - **No rights over `homelab-identity-rg`** — CI cannot modify or delete the identity it runs
   as, which is the entire reason that RG exists separately.
 - **Nothing at subscription scope.** This works only because azurerm 5.x defaults
@@ -207,6 +296,29 @@ This is tolerable by design: `destroy.yml` deliberately never destroys `infra/ne
 break-glass path is a local apply as the owner via `az login` (roadmap risk **R8**; before E02.4
 it was the service principal). If the RG is ever lost, recreate it locally, then re-apply
 `infra/identity` to restore the role assignment that went down with it.
+
+### Custom role definition gotchas (E15.0, #205)
+
+`Homelab Persist Disk Writer` is the repo's first and only custom role. Five things that are not
+obvious and cost an afternoon each if rediscovered:
+
+1. **Role names are unique tenant-wide**, not per-scope. A collision fails with
+   `RoleDefinitionWithSameNameExists`. That is what the `Homelab ` prefix is for — the risk is nil
+   in a personal tenant, and the prefix is for the day it is not.
+2. **Reference it by `role_definition_id`, never `role_definition_name`.** The provider documents
+   the latter as the name of a *built-in* role, and its code path does a tenant-wide
+   `roleDefinitions` List filtered by `roleName` that hard-fails unless exactly one match returns.
+   Use `azurerm_role_definition.X.role_definition_resource_id` — and **not** `.id`, which is
+   `"{guid}|{scope}"` and not an ARM ID at all.
+3. **Never pin `role_definition_id` in config.** It is ForceNew, so a destroy/recreate collides with
+   the retained definition instead of minting a fresh GUID. Let the provider generate it.
+4. **A definition is stored *at* its scope and dies with it** — the same property as a role
+   assignment. If `homelab-persist-rg` is ever deleted, the role and its assignment go with it.
+5. **Deleting is order-sensitive and eventually consistent.** Azure refuses to delete a definition
+   that still has assignments (`RoleDefinitionHasAssignments`); Terraform's graph destroys the
+   assignment first, so a full `destroy` is fine, but an out-of-band `az role definition delete` is
+   not. A destroy followed immediately by a recreate can also hit
+   `RoleDefinitionWithSameNameExists` — wait, then re-apply.
 
 ### Backend auth: `ARM_USE_AZUREAD` is not optional
 
@@ -277,10 +389,16 @@ The UAMI carries `prevent_destroy = true`. To intentionally tear it down you hav
 that `lifecycle` block first — treat needing to as a signal to stop and think.
 
 Recreating the identity mints a **new `client_id`** and a new `principal_id`. Terraform
-re-creates the three role assignments for you in the same apply — they reference the UAMI
+re-creates the five role assignments for you in the same apply — they reference the UAMI
 directly — but the repo variables are yours to update, or every workflow run fails
 authentication. To confirm afterwards, open a trivial PR touching any module directory and check
 its plan goes green, or dispatch `deploy-storage.yml` from `main` with apply unchecked.
+
+**If `homelab-persist-rg` is lost rather than the identity**, the custom role definition and its
+assignment go with it — a definition is stored at its scope, exactly like a role assignment.
+Recovery is to re-run `scripts/bootstrap-persist-rg.sh` (step 0c) and then re-apply this module;
+both are idempotent, and the disk inside the group is a separate matter handled by `infra/storage`'s
+`prevent_destroy` and the restic repository.
 
 Since E02.3 (#35) this is a full CI outage, not a degraded mode: every Terraform workflow
 authenticates as this identity, so the window between recreating the UAMI and updating the repo

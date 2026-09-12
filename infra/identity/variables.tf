@@ -72,3 +72,21 @@ variable "dns_zone_name" {
   description = "The Azure DNS Zone name Caddy's edge identity gets DNS Zone Contributor over"
   type        = string
 }
+
+# --- Persist RG grant inputs (E15.0, #205) --------------------------------
+# Same naming caution as every variable above: neither may be called rg_name.
+# Unlike the RBAC inputs, this RG is not created by any module in this repo —
+# scripts/bootstrap-persist-rg.sh makes it and Terraform only ever reads it
+# (ADR-0009 §2).
+
+variable "persist_rg_name" {
+  description = "Resource group holding the pet disk, created out-of-band by scripts/bootstrap-persist-rg.sh and never Terraform-managed; read-only here"
+  type        = string
+  default     = "homelab-persist-rg"
+}
+
+variable "persist_disk_role_name" {
+  description = "Name of the custom role letting CI create and update managed disks in the persist RG — role names are unique tenant-wide, hence the Homelab prefix"
+  type        = string
+  default     = "Homelab Persist Disk Writer"
+}
