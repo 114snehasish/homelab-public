@@ -72,12 +72,15 @@ To lay this foundation, I deploy the modules in this specific dependency order:
 0.  **Identity** (`infra/identity`) — *one-time bootstrap, local only*
     The managed identity my CI federates into for keyless OIDC auth. It cannot deploy itself
     through Actions (the credential it would need is the thing it creates), so I apply it by
-    hand, once, and never from CI. Full procedure in the
+    hand, once, and never from CI. It also grants CI a narrow custom role over
+    `homelab-persist-rg`, which is created out-of-band first — that group is deliberately not
+    Terraform-managed anywhere (ADR-0009 §2). Full procedure in the
     **[🔑 OIDC Bootstrap Runbook](docs/oidc_bootstrap.md)**.
     ```bash
+    ./scripts/bootstrap-persist-rg.sh   # idempotent; creates the persist RG only
     cd infra/identity
     terraform init
-    terraform apply
+    terraform apply -var="dns_zone_name=az.snehasish-chakraborty.com"
     ```
 
 1.  **Network** (`infra/network`)  

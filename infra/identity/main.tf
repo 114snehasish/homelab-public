@@ -224,3 +224,86 @@ resource "azurerm_role_assignment" "ci_edge_identity_operator" {
 
   skip_service_principal_aad_check = true # same replication-lag reason as above
 }
+
+# --- Persist RG disk grant (E15.0, #205) ----------------------------------
+#
+# ADR-0009 §2: homelab-persist-rg holds the one thing in this lab that must
+# outlive every other thing in it, so it is deliberately NOT Terraform-managed
+# anywhere — prevent_destroy is a guardrail *inside* Terraform and it is one
+# commit deep, while a resource Terraform never manages cannot be destroyed by
+# editing HCL at all. scripts/bootstrap-persist-rg.sh creates it, and it joins
+# `do-not-delete` and `listeninfratfstatesa` on CLAUDE.md's *Never touch* list.
+# Everything below is a grant over it, nothing more.
+
+# If the bootstrap script has not run, this fails at *plan* with a "Resource
+# Group ... was not found" error naming homelab-persist-rg. That is the
+# ordering signal working, not a bug — see docs/oidc_bootstrap.md step 0c.
+data "azurerm_resource_group" "homelab_persist" {
+  name = var.persist_rg_name
+}
+
+# There is no built-in "Disk Contributor" role. Checked against Microsoft's
+# catalogue: the only disk-named built-ins are Disk Backup Reader, Disk Pool
+# Operator, Disk Restore Operator, Disk Snapshot Contributor and Data Operator
+# for Managed Disks, none of which can create a managed disk. The alternatives
+# are Virtual Machine Contributor or Contributor, both of which re-widen exactly
+# what this section narrows. So: a custom role, two actions.
+#
+# Both are needed, and `write` is load-bearing twice over. infra/storage creates
+# the disk (write) and refreshes it (read); compute/vm reads it through a data
+# source (read) and *attaches* it (write — attaching sets the disk's `managedBy`
+# property, and Azure has no disks/join/action the way it does for subnets and
+# NICs). Scoped to the RG rather than to the disk because a role assignment's
+# scope must already exist, and a new fleet node's disk does not yet.
+#
+# Deliberately absent, each for its own reason:
+#   - Microsoft.Compute/disks/delete — CI never needs it. A delete happens only
+#     on destroy, and infra/storage's prevent_destroy already refuses. Leaving
+#     it out makes retiring a disk a deliberate local-owner act and demotes
+#     prevent_destroy to belt-and-braces (ADR-0009 §2).
+#   - Microsoft.Compute/disks/{begin,end}GetAccess/action — these mint a disk
+#     SAS URI, i.e. read the bytes. The worst possible action to hand a CI
+#     credential over the one disk holding every live database in the lab.
+#   - Microsoft.Resources/subscriptions/resourceGroups/read — nothing needs it
+#     today: infra/storage passes the RG as a plain string and compute/vm's only
+#     resource-group data source points at homelab-rg. If a future module adds
+#     `data "azurerm_resource_group"` over this RG it fails at *plan* with
+#     AuthorizationFailed naming that exact action; the fix is one more entry
+#     here, not a wider role.
+#
+# The definition is stored *at* its scope, so it dies with the RG — same
+# property as the homelab-rg Contributor assignment above. Recovery is re-run
+# the bootstrap script, then re-apply this module.
+resource "azurerm_role_definition" "persist_disk_writer" {
+  name        = var.persist_disk_role_name
+  scope       = data.azurerm_resource_group.homelab_persist.id
+  description = "Create, read and update managed disks in ${var.persist_rg_name}. Cannot delete them, and cannot export their contents via a SAS URI."
+
+  # No role_definition_id: the provider generates the GUID. Pinning one is
+  # ForceNew, so a destroy/recreate would collide with the retained definition
+  # (RoleDefinitionWithSameNameExists) instead of minting a fresh one.
+
+  permissions {
+    actions     = ["Microsoft.Compute/disks/read", "Microsoft.Compute/disks/write"]
+    not_actions = []
+  }
+
+  # Defaults to [scope] when omitted. Stated explicitly because this is the
+  # field that answers "where could this role ever be handed out?", and that
+  # answer should not depend on the reader knowing a provider default.
+  assignable_scopes = [data.azurerm_resource_group.homelab_persist.id]
+}
+
+# role_definition_id, not role_definition_name: the provider documents the
+# latter as the name of a *built-in* role, and its code path for it does a
+# tenant-wide roleDefinitions List filtered by roleName that hard-fails unless
+# exactly one match comes back — a race against RBAC propagation on the very
+# apply that creates the definition. role_definition_resource_id is the ARM ID;
+# `.id` must not be used here, it is "{guid}|{scope}" and not an ARM ID at all.
+resource "azurerm_role_assignment" "persist_disk_writer" {
+  scope              = data.azurerm_resource_group.homelab_persist.id
+  role_definition_id = azurerm_role_definition.persist_disk_writer.role_definition_resource_id
+  principal_id       = azurerm_user_assigned_identity.homelab_github_oidc.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
+}
