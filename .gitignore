@@ -20,3 +20,8 @@ apps/**/*.env
 *.tfplan
 tfplan
 crash.log
+# Local pull of the VM's Caddy cert/ACME state — contains private key
+# material; main is force-mirrored to a public repo, so this must never be
+# committed. Interim manual stopgap ahead of ADR-0009's restic backup.
+# (backups/README.md itself stays tracked — it's just the restore runbook.)
+backups/caddy-data/
