@@ -215,9 +215,13 @@ az role assignment list --assignee <principal_id> --all \
   --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
 
-Exactly four rows, matching `terraform output granted_scopes`. **Nothing at subscription
+Exactly five rows, matching `terraform output granted_scopes`. **Nothing at subscription
 scope** — a `/subscriptions/<id>` scope with no resource group after it means something granted
 this identity far more than #34 intends; find out what before going near #35.
+
+> `Managed Identity Operator` (E03.3, #39) was missing from `granted_scopes` until E15.0 (#205),
+> so this comparison used to show a spurious extra row on the Azure side. If you are reading an
+> older checkout, that is why.
 
 > Before #34, this command had to return *nothing at all* — that was E02.1's acceptance
 > criterion, and it is what makes the E02.1 checkpoint safely inert.
@@ -385,7 +389,7 @@ The UAMI carries `prevent_destroy = true`. To intentionally tear it down you hav
 that `lifecycle` block first — treat needing to as a signal to stop and think.
 
 Recreating the identity mints a **new `client_id`** and a new `principal_id`. Terraform
-re-creates the four role assignments for you in the same apply — they reference the UAMI
+re-creates the five role assignments for you in the same apply — they reference the UAMI
 directly — but the repo variables are yours to update, or every workflow run fails
 authentication. To confirm afterwards, open a trivial PR touching any module directory and check
 its plan goes green, or dispatch `deploy-storage.yml` from `main` with apply unchecked.

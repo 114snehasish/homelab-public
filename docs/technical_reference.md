@@ -191,7 +191,9 @@ Both credentials use issuer `https://token.actions.githubusercontent.com` and au
   [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
 
 ### Role assignments (E02.2, #34; extended by E15.0, #205)
-Four `azurerm_role_assignment`s for the CI identity, each scoped as narrowly as the thing it enables:
+The CI identity holds **five** role assignments, each scoped as narrowly as the thing it enables.
+Four are listed here; the fifth, `Managed Identity Operator`, is in the edge-identity table below
+because that is where its scope lives — but it is a CI grant and `granted_scopes` counts it.
 
 | Role | Scope | Enables |
 |---|---|---|
@@ -263,8 +265,10 @@ OIDC credential step. Without it, `terraform init` fails at `listKeys` before va
 `client_id`, `principal_id`, `tenant_id`, `uami_id`, `identity_rg_name`, `granted_scopes`,
 `persist_disk_role_definition_id`. None are secrets — they are identifiers, which is why E02.3 (#35)
 moves them into repo **variables** rather than repo secrets. `granted_scopes` is the audit surface:
-diff it against `az role assignment list --assignee <principal_id> --all`; it now carries four
-entries. Its fourth key comes from the role *definition*'s `name`, not the assignment's
+diff it against `az role assignment list --assignee <principal_id> --all`; it now carries five
+entries, having been silently missing `Managed Identity Operator` (E03.3) until E15.0 — which meant
+the diff it exists to support had a spurious extra row on the Azure side. Its last key comes from
+the role *definition*'s `name`, not the assignment's
 `role_definition_name` — that attribute is Computed and unknown at plan time, and an unknown map
 **key** renders the entire output as `(known after apply)`, hiding the other three rows in exactly
 the plan you want to read them in.
