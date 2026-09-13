@@ -1,6 +1,6 @@
 # ADR-0009: Tiered persistence and the park/resume lifecycle
 
-- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap).
+- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built).
 - **Date**: 2026-09-08
 - **Deciders**: repo owner
 - **Related**: [#96](https://github.com/114snehasish/homelab/issues/96) (E15, parent) · [#97](https://github.com/114snehasish/homelab/issues/97) (this ADR) · [#205](https://github.com/114snehasish/homelab/issues/205) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#100](https://github.com/114snehasish/homelab/issues/100) · [#101](https://github.com/114snehasish/homelab/issues/101) · [#102](https://github.com/114snehasish/homelab/issues/102) · [#206](https://github.com/114snehasish/homelab/issues/206) · [#207](https://github.com/114snehasish/homelab/issues/207) · [#103](https://github.com/114snehasish/homelab/issues/103) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [ADR-0013](0013-caddy-edge-dns01-provider-and-credential-model.md) · [#20](https://github.com/114snehasish/homelab/issues/20) (E07) · [#164](https://github.com/114snehasish/homelab/issues/164) · [#165](https://github.com/114snehasish/homelab/issues/165) · [#54](https://github.com/114snehasish/homelab/issues/54) (E06) · [#124](https://github.com/114snehasish/homelab/issues/124)
@@ -265,12 +265,44 @@ Three consequences that would otherwise be found the hard way:
   at its own mount point and the guard iterates. That costs nothing today and avoids rewriting `#99`
   a second time in E17.6.
 
+#### Amendment (2026-09-13, #99) — the contract as built
+
+**`#99` implements this section as a chain of systemd units, and settles what the table above left
+open.** Per (LUN → mount) entry, every boot: `homelab-persist-prepare@<lun>.service` → the disk's
+`.mount` unit → `homelab-data-guard@<mount>.service` → `homelab-persist.target`, which
+`containerd.service` and `docker.service` require through drop-ins. Sources are in
+`compute/vm/persist/`, assembled into `custom_data` by `compute/vm/cloud-init.tf` without
+`templatefile()`. Every FATAL line and its recovery, the re-bless command included, is in
+[`docs/runbooks/data_guard.md`](../runbooks/data_guard.md).
+
+- **Automatic blessing is scoped to one filesystem and one boot.** Prepare formats only a disk that
+  carries no signature at all, and records the new filesystem's UUID in
+  `/run/homelab-persist/lun<N>.formatted`. The guard calls `write-persist-marker.sh --created-by
+  cloud-init` only when the marker is absent **and** that UUID is the mounted filesystem's. `/run`
+  is tmpfs, so an unmarked disk that was not formatted this boot — a restore, a disk from elsewhere —
+  is never blessed without a human.
+- **Three more rows.** `mount` ≠ the guarded mount point → **warn**: it is reassignable by
+  configuration, like `disk_name`. `schema` ≠ `1` → **fatal**. IMDS still unreachable after ~60 s of
+  retries → **fatal**: an identity that cannot be checked is not trusted.
+- **The marker is parsed as `key=value` data, never sourced.** It lives on the data disk and is read
+  as root at boot.
+- **The disk can arrive after boot, by design.** `azurerm_virtual_machine_data_disk_attachment` is
+  created only once the VM exists, so on the first boot of every recreated VM — every resume — the
+  disk appears seconds to minutes late. Prepare waits up to 300 s for it. A short device timeout would
+  fail resumes, not just disk-less boots (and `x-systemd.device-timeout=` is ignored outside fstab
+  anyway).
+- **The boot survives a missing or rejected disk; only the container runtime does not.** The mount
+  unit is ordered after `local-fs.target` rather than before it, so nothing in early boot waits on it:
+  the node stays reachable over SSH, and the units also log to the serial console that the VM's
+  `boot_diagnostics` exposes.
+
 ### 4. What persists, and what resets every cycle
 
 **Persists.** *T0:* Terraform state; the DNS zone and its static records; the backup storage account
 and restic repository; both user-assigned identities and every role assignment; VNet, subnet, NSG and
 the resource groups themselves; Key Vault once E05 lands. *T1, on `/data`:* app state and live
-databases; Prometheus and Loki history; Caddy's certificates and ACME account; k3s PVs.
+databases; Prometheus and Loki history; Caddy's certificates and ACME account; k3s PVs; and, since
+`#99`, Docker's and containerd's storage — images, snapshots, volumes, networks and containers.
 
 **Resets every cycle.** Everything below is destroyed by park and rebuilt by resume. The point of
 listing it is that each line is something a future change could accidentally depend on.
@@ -280,8 +312,8 @@ listing it is that each line is something a future change could accidentally dep
 | **Public IP address** | Park destroys it; resume mints a new one. The wildcard `*` record is an alias to the public IP resource (`target_resource_id`), so it re-points with **no Terraform run in `infra/dns`** — that elegance is the reason nothing else may pin the literal address. **Nothing may hard-code the IP**: not a firewall allow-list, not a monitoring target, not a bookmark. |
 | **SSH host keys** | Regenerated on every fresh OS disk. Combined with the new address above, `known_hosts` breaks on **both** axes every cycle — `ssh-keygen -R` for the old host and address belongs in the resume runbook (`#102`), not in the reader's muscle memory. |
 | **Tailscale machine state** | Every resume registers a **brand-new tailnet node**. Park weekly and within two months the tailnet is a graveyard of dead machines with MagicDNS names drifting `homelab-edge-1`, `-2`, … — silently breaking anything that addresses the node by name. Caused here, **owned by E06** ([#54](https://github.com/114snehasish/homelab/issues/54)); the mitigation is named so E06 inherits it rather than rediscovering it: **ephemeral auth keys** (the node is reaped automatically on disconnect) plus a **pinned `--hostname`**. |
-| **OS disk and everything on it** | Installed packages, the Docker engine, journald history. Anything that must survive moves to `/data` — which is what `#99`'s optional `data-root` move is about. |
-| **Docker containers, images and layers** | Re-pulled on resume unless `data-root` moves to `/data/docker`; that choice is a capacity question, settled in §7. |
+| **OS disk and everything on it** | Installed packages, the Docker and containerd binaries, journald history. Anything that must survive lives on `/data` — since `#99` that includes all of Docker's storage (next row). |
+| **Docker containers, images and layers** — *no longer resets, since `#99`* | `data-root` is `/data/docker` and containerd's root is `/data/containerd`, both behind the data-guard. **Both** roots, because Docker Engine 29+ keeps image content and container snapshots under containerd's root, which `data-root` does not move: moving `data-root` alone would persist containers without the snapshots they point at, and none would restart after a recreate. Two consequences. **Park must leave containers running** — `restart: unless-stopped` does not bring back a container that was explicitly stopped, so a `docker compose stop` or `down` before park means it stays down after resume ([#101](https://github.com/114snehasish/homelab/issues/101)). And **a bind-mount source outside `/data` does not survive** — Caddy's `./Caddyfile` lives under `/home/azureuser/apps` on the OS disk, so until [#40](https://github.com/114snehasish/homelab/issues/40) / [#101](https://github.com/114snehasish/homelab/issues/101) move the apps layer, a resume still redeploys apps before they serve. |
 | **k3s cluster state** | Deliberately not persisted: Argo CD re-bootstraps the cluster from git (E09). The PVs under `/data/k8s-pv` are T1 and do survive. |
 | **The NSG's SSH allow rule** | Already drifts today — it whitelists the public IP of whatever machine last ran plan/apply. Dies with E06. |
 | **NAT Gateway**, once it exists | [#164](https://github.com/114snehasish/homelab/issues/164) owns its teardown *in park from day one*. See §8 — leaving it up voids the entire parked-cost budget. |
@@ -450,7 +482,7 @@ number change plus a reboot.
 | Prometheus TSDB | 4 GB | **retention policy, below** |
 | Loki | 2 GB | **retention policy, below** |
 | k3s PVs (`/data/k8s-pv`) | 2 GB | workload |
-| Docker `data-root`, if `#99` moves it | 8 GB | images dominate |
+| Docker `data-root` + containerd root (`#99`): images, snapshots, volumes, container logs | 8 GB | images dominate; container logs capped at 10 MB × 3 per container |
 | restic cache (`#207`, pinned off the OS disk) | 1 GB | repo size |
 | **Total** | **~19 GB of 32 GiB** | ~40% headroom |
 
@@ -526,7 +558,8 @@ exists, it supersedes this table and this ADR is edited to match.
 - **The guard is fail-closed, which means this ADR deliberately creates a "the lab will not come up"
   mode.** A disk that fails the marker check leaves Docker stopped. That is the flagship guarantee
   and it is also a new way to be down; the re-bless procedure in §3 is the documented recovery, and
-  it must be in the runbook before `#99` ships, not after the first time it fires.
+  it must be in the runbook before `#99` ships, not after the first time it fires — it shipped with
+  `#99`, in [`docs/runbooks/data_guard.md`](../runbooks/data_guard.md).
 - **The backup account's protective settings are unreconciled.** §2's second condition. Terraform
   will never notice if versioning or soft delete is turned off, so the drill checks it. Since the
   2026-09-12 amendment that account is `listeninfratfstatesa` and the settings are account-level, so

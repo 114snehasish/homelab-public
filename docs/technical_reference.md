@@ -77,7 +77,7 @@ same default, and a data-disk attachment works across resource groups as long as
 ### Resources
 - `azurerm_managed_disk.homelab_data_disk`: The primary persistent store.
   - **Lifecycle**: Protected by `prevent_destroy = true`.
-  - **Role**: currently hosts Docker data volumes; architected to exist independently of any specific compute instance.
+  - **Role**: holds everything that must outlive a VM — app state under `/data/<app>`, plus Docker's and containerd's storage roots (`/data/docker`, `/data/containerd`, #99); architected to exist independently of any specific compute instance.
 
 ---
 
@@ -153,18 +153,29 @@ stays at one node" still gate whether a second node *should* exist, and E09 (k3s
 [#22](https://github.com/114snehasish/homelab/issues/22)) may answer that with an agent node
 instead of a pet VM.
 
-### Automation (`cloud-init.yaml`)
-The bootstrapping script is designed to:
-1.  Detect the persistent storage at **LUN 10** (`var.data_disk_lun` and this file are a
-    coupled pair — the LUN path `/dev/disk/azure/scsi1/lun10` is hardcoded in the script, so
-    changing the variable alone breaks the mount).
-2.  Safely mount it to `/data` (avoiding destructive formatting).
-3.  Initialize the container runtime.
+### Automation (`cloud-init.yaml` + the mount contract)
+`custom_data` is assembled by `cloud-init.tf`, not read from one file
+([#99](https://github.com/114snehasish/homelab/issues/99)). It `yamldecode()`s `cloud-init.yaml`,
+appends the mount contract's files from `persist/` (plus `scripts/write-persist-marker.sh`) to
+`write_files` verbatim, renders one `.mount` unit per (LUN → mount) entry and a
+`homelab-persist.target`, and `yamlencode()`s the result. Nothing is a Terraform template, so shell
+`${…}` needs no escaping, and `data_disk_lun` feeds the rendered units, so the attachment and the
+contract can no longer disagree. A plan-time `precondition` holds the result under Azure's
+65,535-byte `custom_data` limit. Any change to those files replaces the VM.
 
-It is read with `filebase64(var.cloud_init_file)` and **not** `templatefile()`: the script's
-`PARTITION="${DISK}1"` is a *shell* expansion, which `templatefile()` would try to interpolate
-as Terraform (it would need escaping as `$${DISK}1`). The rewrite that revisits this is
-[#99](https://github.com/114snehasish/homelab/issues/99).
+On every boot the node then:
+1.  **Prepares** the disk at `/dev/disk/azure/scsi1/lun10` (`homelab-persist-prepare@10`): waits up
+    to 300 s for it (the attachment lands after first boot), runs `e2fsck -p` on an existing ext4,
+    and formats **only** a disk that carries no signature at all — anything else is refused.
+2.  **Mounts** it on `/data` (`data.mount`), outside early boot, so a missing disk never blocks SSH.
+3.  **Verifies** it (`homelab-data-guard@data`): `/data/.homelab-persist` against Azure IMDS and
+    `blkid`, per ADR-0009 §3.
+4.  **Starts the container runtime** only then: `containerd.service` and `docker.service` require
+    `homelab-persist.target`, and keep their roots at `/data/containerd` and `/data/docker`.
+
+`boot_diagnostics {}` (managed storage) exposes the serial log, which carries the same prepare and
+guard lines. Operating it, every FATAL line, and the re-bless procedure:
+[docs/runbooks/data_guard.md](runbooks/data_guard.md).
 
 ---
 

@@ -1,75 +1,51 @@
 #cloud-config
+#
+# Base cloud-config for compute/vm nodes. Terraform does not send this file
+# as-is: compute/vm/cloud-init.tf parses it, appends the mount contract's files
+# (#99) to write_files, and re-encodes the result into custom_data. Nothing here
+# is a Terraform template, so shell ${...} needs no escaping.
+#
+# The data disk is not handled here. systemd units from compute/vm/persist/
+# prepare, mount and verify it on every boot, and hold Docker down until that
+# succeeds — see docs/runbooks/data_guard.md.
+
 package_upgrade: true
 packages:
   - ca-certificates
   - curl
   - gnupg
 
-write_files:
-  - path: /etc/apt/keyrings/docker.asc
-    permissions: '0644'
-    owner: root:root
-    encoding: b64
-    content: |
-      mQINBFit2ioBEADhWpZ8/39X3... (Note: This is usually fetched via curl, simplified below)
-
 runcmd:
-  # 1. Setup Disk (Inline Script)
-  - |
-    set -x
-    (
-      echo "Starting Disk Setup..."
-      # Wait for disk - naive check for sdc first (common for data disk 0)
-      DISK="/dev/sdc"
-      
-      # Try to find by LUN if possible
-      if [ -e /dev/disk/azure/scsi1/lun10 ]; then
-        DISK=$(readlink -f /dev/disk/azure/scsi1/lun10)
-      fi
-      
-      echo "Using disk: $DISK"
-      
-      # Partition if needed
-      if ! lsblk $DISK | grep -q "part"; then
-        echo "Partitioning $DISK..."
-        parted -s $DISK mklabel gpt
-        parted -s $DISK mkpart primary ext4 0% 100%
-        partprobe $DISK
-        sleep 5
-      fi
-      
-      PARTITION="${DISK}1"
-      
-      # Format if needed
-      # Check if filesystem exists (blkid returns part info even without FS, so we grep for TYPE)
-      if ! blkid $PARTITION | grep -q 'TYPE='; then
-        echo "Formatting $PARTITION..."
-        mkfs.ext4 $PARTITION
-      fi
-      
-      # Create Mount Point
-      mkdir -p /data
-      
-      # Mount
-      if ! mountpoint -q /data; then
-        mount $PARTITION /data
-        # Set permissions for azureuser
-        chown -R azureuser:azureuser /data
-        echo "$PARTITION /data ext4 defaults,nofail 0 2" >> /etc/fstab
-      fi
-      
-      echo "Disk Setup Complete."
-    ) > /var/log/disk-setup.log 2>&1
+  # 1. The persistence chain. Its units arrived through write_files; start it
+  #    without blocking cloud-init. On a resume the disk attachment can land
+  #    after this runs, and homelab-persist-prepare waits for it.
+  - systemctl daemon-reload
+  - systemctl enable homelab-persist.target
+  - systemctl start --no-block homelab-persist.target
 
-  # 2. Add Docker's official GPG key:
+  # 2. Docker's apt repository.
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   - chmod a+r /etc/apt/keyrings/docker.asc
-
-  # 3. Add the repository to Apt sources:
-  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  - |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update
-  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  # 4. Post-install steps
+  # 3. Install Docker without letting the packages start it. docker-ce and
+  #    containerd.io start their daemons from postinst; a policy-rc.d that exits
+  #    101 vetoes that, so each daemon only ever starts through its drop-in,
+  #    behind homelab-persist.target. /etc/docker/daemon.json is already in place
+  #    from write_files, so dockerd never initialises /var/lib/docker either.
+  #    No `exit` in this block: every runcmd entry shares one shell script.
+  - |
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+    chmod 0755 /usr/sbin/policy-rc.d
+    DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    rm -f /usr/sbin/policy-rc.d
   - usermod -aG docker azureuser
+
+  # 4. Start Docker through the guard. The job waits for homelab-persist.target,
+  #    then starts or fails with "Dependency failed" and the chain's reason in
+  #    journald. Last on purpose: if the install failed there is no
+  #    docker.service, this exits non-zero, and cloud-init status reports it.
+  - systemctl start --no-block docker.service

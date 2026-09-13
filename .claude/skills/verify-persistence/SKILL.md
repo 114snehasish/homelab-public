@@ -37,8 +37,8 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
    two are the same thing; the moment it is not, the untargeted form is a mistake. (Removing the
    entry from `fleet.tfvars` and applying is the other way to retire one node — that one is
    permanent, which is not what this test wants.)
-4. **Recreate**: `terraform -chdir=compute/vm apply -auto-approve -var-file=../../fleet.tfvars`. Wait for cloud-init to finish (it remounts the existing disk at /data without formatting — check `/var/log/disk-setup.log` if unsure).
-5. **Verify survival** on the new VM (fresh Docker engine, so `docker ps -a` being empty is expected):
+4. **Recreate**: `terraform -chdir=compute/vm apply -auto-approve -var-file=../../fleet.tfvars`. Wait for cloud-init (`cloud-init status --wait`), then confirm the mount contract (#99): `systemctl is-active homelab-persist.target` prints `active`, and `journalctl -b -u 'homelab-persist-prepare@*' -u 'homelab-data-guard@*'` shows prepare finding the existing ext4 **without formatting** and the guard printing `OK`.
+5. **Verify survival** on the new VM. Docker's storage lives on `/data` since #99, so `docker ps -a` still lists `test-redis` — expected, not stale state:
    ```bash
    sudo docker run -d --name test-redis-2 -v /data/redis:/data redis
    sudo docker exec test-redis-2 cat /data/persistence_check.txt
@@ -48,4 +48,4 @@ terraform -chdir=compute/vm init -input=false -backend-config="key=homelab.compu
 
 ## Cleanup and report
 
-Remove the test containers (`sudo docker rm -f test-redis-2`) and optionally `/data/redis`. Report pass/fail, the old vs. new public IP, and anything unexpected in cloud-init's disk setup log.
+Remove the test containers (`sudo docker rm -f test-redis test-redis-2` — both exist, since containers now survive the recreate) and optionally `/data/redis`. Report pass/fail, the old vs. new public IP, and anything unexpected in the prepare/guard journal (`journalctl -b -u 'homelab-persist-prepare@*' -u 'homelab-data-guard@*'`).

@@ -52,8 +52,9 @@ terraform -chdir=<module> plan -input=false        # this is also how you "plan 
 - **`infra/identity` is a one-time local bootstrap with no workflow** — it creates the very managed
   identity CI authenticates as, so it can't deploy itself. Runbook: `docs/oidc_bootstrap.md`.
 - **"Cattle VM, pet disk".** `compute/vm` is disposable (destroy/recreate is routine); the
-  `infra/storage` data disk carries `prevent_destroy = true` and must always survive. cloud-init
-  only formats the disk if it is unformatted.
+  `infra/storage` data disk carries `prevent_destroy = true` and must always survive. The mount
+  contract (#99) formats a disk only if it carries no signature at all, and Docker cannot start
+  until `/data` is mounted and passes the data-guard (`docs/runbooks/data_guard.md`).
 - **CI is layered reusable workflows.** Each `deploy-*.yml` is a thin wrapper over
   `.github/workflows/_terraform.yml`; `deploy.yml` chains all five in order; `destroy.yml`
   (compute → cloudflare only, skipping the pet disk) also wraps `_terraform.yml` with
@@ -93,10 +94,10 @@ terraform -chdir=<module> plan -input=false        # this is also how you "plan 
 - **`main` is force-mirrored to a public GitHub repo on every push** (`mirror.yml`) — treat
   everything committed as public and never commit tfvars, keys, or `.env`. A `.claude/` guardrail
   blocks tool access to `.env` files as defense-in-depth.
-- cloud-init (`compute/vm/cloud-init.yaml`) is coupled to the data disk LUN: it expects
-  `/dev/disk/azure/scsi1/lun10`, so changing `var.data_disk_lun` breaks the mount. The file is read
-  with `filebase64` (not `templatefile`), so its `${DISK}1` is a shell expansion — don't switch to
-  `templatefile()` without escaping.
+- Don't template shell into `custom_data`. `compute/vm/cloud-init.tf` parses `cloud-init.yaml` and
+  appends the mount contract's files (`compute/vm/persist/`, `scripts/write-persist-marker.sh`)
+  verbatim — no `templatefile()`. Any edit to those files replaces the VM, and never loosen
+  `homelab-persist-prepare`'s refuse-on-any-signature rule (risk R4).
 
 ## Expected plan noise
 

@@ -120,8 +120,7 @@ openssl s_client -connect test.az.snehasish-chakraborty.com:443 -servername test
 Expect exactly `DNS:*.az.snehasish-chakraborty.com`. Anything more specific means a hostname leaked
 into the cert — check the Caddyfile for an accidental second site block before anything else.
 
-**Persistence check** (cheap version — a full VM-recreate check is the `verify-persistence` skill,
-worth running only after `#99` lands the new mount contract):
+**Persistence check** (cheap version — a full VM-recreate check is the `verify-persistence` skill):
 
 ```bash
 ssh azureuser@<public_ip> 'cd apps/caddy && docker compose down && docker compose up -d'
@@ -130,6 +129,12 @@ ssh azureuser@<public_ip> 'cd apps/caddy && docker compose logs caddy' | grep -i
 
 Expect the cert to load from `/data` with no new ACME order — Caddy logs loading an existing
 certificate, not requesting one.
+
+**After a VM recreate (a resume).** Since `#99`, Docker's storage lives on `/data`, so the Caddy
+container and the `web` network survive and the container restarts by itself — but `./Caddyfile`
+and `.env` live in `/home/azureuser/apps` on the OS disk, which the recreate replaced. Redo Steps 2
+and 3 before expecting Caddy to serve (Step 1 will just report that `web` already exists). If the
+restarting container left an empty `Caddyfile` *directory* behind, remove it before the `rsync`.
 
 ## Adding a real app
 

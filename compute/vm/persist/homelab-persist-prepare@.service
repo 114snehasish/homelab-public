@@ -1,0 +1,24 @@
+# homelab-persist-prepare@<LUN>.service (#99)
+#
+# Identify, check, or first-format the Azure data disk at LUN %i, ahead of its
+# .mount unit (rendered per node by compute/vm/cloud-init.tf). Every rule lives
+# in /usr/local/sbin/homelab-persist-prepare; operating notes are in
+# docs/runbooks/data_guard.md.
+#
+# Restarting this unit restarts everything that requires it: the mount, the
+# guard, homelab-persist.target, containerd and Docker. Inspect it with
+# `systemctl status`, not `restart`.
+
+[Unit]
+Description=Homelab persistence: prepare the data disk at LUN %i
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/data_guard.md
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/homelab-persist-prepare %i
+# The script's own 300s wait is the device timeout. This only bounds a hung
+# e2fsck or mkfs, so a stuck disk still ends in a failure rather than a hang.
+TimeoutStartSec=20min
+StandardOutput=journal+console
+StandardError=journal+console

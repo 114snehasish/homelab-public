@@ -1,0 +1,22 @@
+# homelab-data-guard@<escaped mount>.service (#99, ADR-0009 §3)
+#
+# Verify that the disk mounted at %f is the one this lab blessed, by comparing
+# %f/.homelab-persist with Azure IMDS and blkid. homelab-data-guard@data.service
+# guards /data. Rules: /usr/local/sbin/homelab-data-guard. Recovery from each
+# FATAL line: docs/runbooks/data_guard.md.
+
+[Unit]
+Description=Homelab persistence: data-guard for %f
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/data_guard.md
+# Requires= and After= on the .mount unit for %f, and through it on prepare.
+RequiresMountsFor=%f
+# IMDS is the authority for the instance and disk names.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/homelab-data-guard %f
+StandardOutput=journal+console
+StandardError=journal+console

@@ -6,16 +6,19 @@ variable "instances" {
     # Azure VM size. The resize to Standard_B4ms is tracked in #61.
     vm_size = optional(string, "Standard_B2s")
     # Local admin created by cloud-init and authorized for the SSH key.
-    # cloud-init.yaml also hardcodes this name (chown of /data, docker group),
-    # so the two must be changed together.
+    # cloud-init.yaml also hardcodes this name (docker group membership), so the
+    # two must be changed together.
     admin_username = optional(string, "azureuser")
-    # LUN the persistent data disk is attached at. cloud-init.yaml discovers the
-    # disk at /dev/disk/azure/scsi1/lun10, so changing this alone breaks the
-    # mount contract — see #99.
+    # LUN the persistent data disk is attached at. It feeds the mount contract
+    # (#99): cloud-init.tf renders the .mount unit and the prepare instance for
+    # this LUN, so the attachment and the contract can no longer disagree.
+    # Changing it on a deployed node still replaces the VM (custom_data is
+    # ForceNew).
     data_disk_lun = optional(number, 10)
-    # cloud-init file rendered into custom_data, resolved relative to this module
-    # directory. Read with filebase64() and not templatefile() on purpose: the
-    # file's $${DISK}1 is a shell expansion templatefile() would interpolate (#99).
+    # Base cloud-config, resolved relative to this module directory. Never sent
+    # as-is and never read as a template: cloud-init.tf parses it and appends the
+    # mount contract's files to write_files (#99), so shell ${...} in it needs no
+    # escaping.
     cloud_init_file = optional(string, "cloud-init.yaml")
     # Name of the NIC's ip_configuration block. Scoped to its own NIC, so it needs
     # no uniqueness across instances; changing it forces a NIC (and VM) replacement
