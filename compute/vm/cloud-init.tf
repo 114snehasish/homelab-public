@@ -95,7 +95,11 @@ locals {
               Before=umount.target
 
               [Mount]
-              What=/dev/disk/azure/scsi1/lun${u.lun}-part1
+              # prepare's link to the partition it vetted, not /dev/disk/azure/scsi1/lun${u.lun}-part1:
+              # a What= under /dev gets a systemd device job with its own 90 s timeout,
+              # which fails this mount when the disk attaches late but inside prepare's
+              # 300 s wait. A path outside /dev gets no device job.
+              What=/run/homelab-persist/lun${u.lun}-part1
               Where=${u.mount}
               Type=ext4
               Options=defaults

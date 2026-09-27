@@ -49,7 +49,22 @@ WAIT_SECONDS="${HOMELAB_PERSIST_WAIT_SECONDS:-300}"
 
 DISK_LINK="/dev/disk/azure/scsi1/lun${LUN}"
 PART_LINK="${DISK_LINK}-part1"
-FLAG="/run/homelab-persist/lun${LUN}.formatted"
+RUN_DIR="/run/homelab-persist"
+FLAG="${RUN_DIR}/lun${LUN}.formatted"
+
+# The .mount unit's What= is this link, never ${PART_LINK}. A What= under /dev
+# makes systemd queue its own job waiting for that device, with a 90s timeout of
+# its own that runs alongside the wait below: a disk attached after 90s failed
+# the mount and Docker, and nothing retried once prepare found it. A What=
+# outside /dev gets no device job, and this link exists only once this run has
+# vetted partition 1, so the mount waits on prepare and on nothing else.
+VETTED="${RUN_DIR}/lun${LUN}-part1"
+vet() {
+  install -d -m 0700 "$RUN_DIR"
+  ln -sfn "$1" "$VETTED"
+}
+# A link from an earlier run this boot must not outlive a refusal on this one.
+rm -f "$VETTED"
 
 wait_for() { # <path> <seconds>
   local i
@@ -76,6 +91,7 @@ if [[ -e "$PART_LINK" ]]; then
   PART="$(readlink -f "$PART_LINK")"
 
   if findmnt -rn --source "$PART" >/dev/null; then
+    vet "$PART"
     say "LUN ${LUN}: ${PART} is already mounted; nothing to prepare"
     exit 0
   fi
@@ -95,6 +111,7 @@ if [[ -e "$PART_LINK" ]]; then
   ((rc < 4)) ||
     fatal "e2fsck -p ${PART} exited ${rc}: the filesystem needs a manual fsck before it is mounted (docs/runbooks/data_guard.md)."
 
+  vet "$PART"
   say "LUN ${LUN}: existing ext4 on ${PART} (UUID $(blkid -p -s UUID -o value "$PART"), e2fsck status ${rc}) — not formatting"
   exit 0
 fi
@@ -124,6 +141,7 @@ mkfs.ext4 -q "$PART"
 UUID="$(blkid -p -s UUID -o value "$PART")"
 [[ -n "$UUID" ]] || fatal "mkfs.ext4 ${PART} left no filesystem UUID."
 
-install -d -m 0700 "$(dirname "$FLAG")"
+install -d -m 0700 "$RUN_DIR"
 printf '%s\n' "$UUID" >"$FLAG"
+vet "$PART"
 say "LUN ${LUN}: formatted ${PART} as ext4 (UUID ${UUID}); homelab-data-guard will bless it this boot"
