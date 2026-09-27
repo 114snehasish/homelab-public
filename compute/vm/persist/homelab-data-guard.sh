@@ -12,6 +12,7 @@
 # write-persist-marker.sh, and is compared field by field with the live machine:
 #
 #   marker absent      FATAL  unless prepare formatted THIS filesystem THIS boot -> bless it
+#                             (after waiting up to 120s for IMDS to list the disk)
 #   schema != 1        FATAL  a marker this guard does not understand
 #   fs_uuid            FATAL  the strongest signal; a filesystem UUID is not reassigned by mistake
 #   instance           FATAL  the right disk on the wrong node (vs IMDS compute/name)
@@ -63,27 +64,46 @@ done
 [[ -n "$LUN" ]] || fatal "could not map ${DEVICE} back to an Azure data-disk LUN."
 
 # --- The platform's answer: IMDS, never the hostname ---------------------------
-IMDS=""
-for ((attempt = 1; attempt <= 12; attempt++)); do
-  IMDS="$(curl -fsS -m 5 -H 'Metadata: true' "$IMDS_URL" 2>/dev/null)" && break
-  IMDS=""
-  sleep 5
-done
-[[ -n "$IMDS" ]] || fatal "Azure IMDS unreachable after 12 attempts (~60s): this disk's identity cannot be checked."
+read_imds() { # sets LIVE_INSTANCE and LIVE_DISK_NAME ("" while IMDS lists no disk at $LUN)
+  local attempt imds=""
+  for ((attempt = 1; attempt <= 12; attempt++)); do
+    imds="$(curl -fsS -m 5 -H 'Metadata: true' "$IMDS_URL" 2>/dev/null)" && break
+    imds=""
+    sleep 5
+  done
+  [[ -n "$imds" ]] || fatal "Azure IMDS unreachable after 12 attempts (~60s): this disk's identity cannot be checked."
 
-LIVE_INSTANCE="$(printf '%s' "$IMDS" | python3 -c 'import json,sys; print(json.load(sys.stdin)["compute"]["name"])')" ||
-  fatal "IMDS returned no compute/name."
-LIVE_DISK_NAME="$(printf '%s' "$IMDS" | LUN="$LUN" python3 -c '
+  LIVE_INSTANCE="$(printf '%s' "$imds" | python3 -c 'import json,sys; print(json.load(sys.stdin)["compute"]["name"])')" ||
+    fatal "IMDS returned no compute/name."
+  LIVE_DISK_NAME="$(printf '%s' "$imds" | LUN="$LUN" python3 -c '
 import json, os, sys
 lun = int(os.environ["LUN"])
 disks = json.load(sys.stdin)["compute"]["storageProfile"]["dataDisks"]
 print(next((d["name"] for d in disks if int(d["lun"]) == lun), ""))
 ')" || fatal "IMDS returned no storageProfile/dataDisks."
+}
+read_imds
 
 # --- A disk with no marker -------------------------------------------------------
 if [[ ! -e "$MARKER" ]]; then
   FLAG="/run/homelab-persist/lun${LUN}.formatted"
   if [[ -f "$FLAG" && "$(<"$FLAG")" == "$LIVE_UUID" ]]; then
+    # IMDS lags a fresh attach: storageProfile/dataDisks left a just-attached
+    # disk out for up to a minute on the #99 test VM, and the writer refuses to
+    # bless a LUN that IMDS does not list. Only this path waits. On the verify
+    # path a missing name is a disk_name WARN at worst.
+    IMDS_DISK_WAIT="${HOMELAB_GUARD_IMDS_DISK_WAIT_SECONDS:-120}"
+    deadline=$((SECONDS + IMDS_DISK_WAIT))
+    if [[ -z "$LIVE_DISK_NAME" ]]; then
+      printf '%s: %s: IMDS lists no data disk at LUN %s yet; waiting up to %ss before blessing\n' \
+        "$TAG" "$MOUNT" "$LUN" "$IMDS_DISK_WAIT"
+    fi
+    while [[ -z "$LIVE_DISK_NAME" ]] && ((SECONDS < deadline)); do
+      sleep 5
+      read_imds
+    done
+    [[ -n "$LIVE_DISK_NAME" ]] ||
+      fatal "IMDS still lists no data disk at LUN ${LUN} after ${IMDS_DISK_WAIT}s, so freshly formatted filesystem ${LIVE_UUID} is not blessed yet. This boot can still bless it: once IMDS lists the disk, sudo systemctl start docker.service (docs/runbooks/data_guard.md)."
     "$WRITER" --mount "$MOUNT" --created-by cloud-init ||
       fatal "could not bless freshly formatted filesystem ${LIVE_UUID}: ${WRITER} failed."
     rm -f "$FLAG"
