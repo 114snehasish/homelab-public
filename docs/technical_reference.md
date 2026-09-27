@@ -166,10 +166,14 @@ contract can no longer disagree. A plan-time `precondition` holds the result und
 On every boot the node then:
 1.  **Prepares** the disk at `/dev/disk/azure/scsi1/lun10` (`homelab-persist-prepare@10`): waits up
     to 300 s for it (the attachment lands after first boot), runs `e2fsck -p` on an existing ext4,
-    and formats **only** a disk that carries no signature at all — anything else is refused.
-2.  **Mounts** it on `/data` (`data.mount`), outside early boot, so a missing disk never blocks SSH.
+    and formats **only** a disk that carries no signature at all — anything else is refused. Only
+    then does it link the vetted partition as `/run/homelab-persist/lun10-part1`.
+2.  **Mounts** that link on `/data` (`data.mount`), outside early boot, so a missing disk never
+    blocks SSH. The mount's `What=` is deliberately not a `/dev` path. That would give systemd its
+    own 90 s device job, which fails a disk that attaches after 90 s but inside prepare's wait.
 3.  **Verifies** it (`homelab-data-guard@data`): `/data/.homelab-persist` against Azure IMDS and
-    `blkid`, per ADR-0009 §3.
+    `blkid`, per ADR-0009 §3. A disk formatted this boot is blessed automatically once IMDS lists it
+    (the guard waits up to 120 s for that, because IMDS lags a fresh attachment).
 4.  **Starts the container runtime** only then: `containerd.service` and `docker.service` require
     `homelab-persist.target`, and keep their roots at `/data/containerd` and `/data/docker`.
 

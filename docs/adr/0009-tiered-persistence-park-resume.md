@@ -290,7 +290,14 @@ open.** Per (LUN → mount) entry, every boot: `homelab-persist-prepare@<lun>.se
   created only once the VM exists, so on the first boot of every recreated VM — every resume — the
   disk appears seconds to minutes late. Prepare waits up to 300 s for it. A short device timeout would
   fail resumes, not just disk-less boots (and `x-systemd.device-timeout=` is ignored outside fstab
-  anyway).
+  anyway). For the same reason the `.mount` unit's `What=` is not the `/dev/disk/azure/…` path: any
+  `What=` under `/dev` makes systemd queue its own device job with a 90 s timeout, which the #99 test
+  VM showed failing the mount and Docker on a disk attached at +120 s, well inside prepare's
+  wait. Prepare instead links the partition it vetted as `/run/homelab-persist/lun<N>-part1`, and
+  the mount uses that link, which gets no device job. IMDS lags the attachment as well:
+  `storageProfile/dataDisks` can leave a just-attached disk out for about a minute, so before an
+  automatic bless the guard waits up to 120 s for IMDS to list the LUN. The writer refuses a LUN
+  that IMDS does not list. On the verify path a missing name costs only a `disk_name` warning.
 - **The boot survives a missing or rejected disk; only the container runtime does not.** The mount
   unit is ordered after `local-fs.target` rather than before it, so nothing in early boot waits on it:
   the node stays reachable over SSH, and the units also log to the serial console that the VM's
