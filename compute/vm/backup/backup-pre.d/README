@@ -1,0 +1,27 @@
+Pre-backup hooks — application consistency (#100, ADR-0009 §6)
+
+restic-backup runs every executable *.sh in this directory, in name order, before
+it takes the snapshot. A hook renders a CONSISTENT copy of one app's live state
+somewhere under /data; the snapshot then picks that copy up like any other file.
+
+Why this exists: a file-level copy of a live database is a crash-consistent copy.
+For SQLite and Postgres that means "usually fine, occasionally corrupt", and the
+corruption is discovered during a restore. A hook turns that into a supported
+operation the database itself performs.
+
+The contract:
+
+  - Name it 10-<app>.sh, make it executable, keep it idempotent.
+  - Write the dump under /data/<app>/ so it lands inside the backup set.
+  - Exit non-zero to ABORT the whole run. That is deliberate: a snapshot taken
+    without one app's consistency is exactly the backup that looks fine until it
+    is needed.
+  - Keep it fast. Park (#101) waits on this path.
+
+Examples, for when the first stateful app lands (E03.5/E03.6):
+
+  SQLite   sqlite3 /data/<app>/app.db ".backup '/data/<app>/app.db.bak'"
+  Postgres docker exec <container> pg_dump -U <user> <db> > /data/<app>/dump.sql
+
+This directory is empty today because the lab has no stateful app yet. It ships
+empty on purpose rather than with speculative hooks for apps that do not exist.

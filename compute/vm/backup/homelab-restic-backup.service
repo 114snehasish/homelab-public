@@ -1,0 +1,36 @@
+# homelab-restic-backup.service (#100, ADR-0009 §6)
+#
+# The nightly logical backup of /data into the restic repository. Rules live in
+# /usr/local/sbin/restic-backup; operating notes and every failure mode are in
+# docs/runbooks/restic_backup.md.
+#
+# Requires= on homelab-persist.target is THE reason #99 blocked #100. With the
+# target down — no disk, a disk that failed its data-guard, a half-mounted /data
+# — this unit does not run at all and ends in "Dependency failed". That is the
+# intended outcome: a clean-looking snapshot of the wrong filesystem is worse
+# than no snapshot, because it is a backup you would trust.
+
+[Unit]
+Description=Homelab backup: restic snapshot of /data
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/restic_backup.md
+Requires=homelab-persist.target
+After=homelab-persist.target
+Wants=network-online.target
+After=network-online.target
+# Belt-and-braces behind Requires= above. This one only SKIPS the unit rather
+# than failing it, so it is the second check and never the only one.
+ConditionPathIsMountPoint=/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/restic-backup nightly
+# A first backup of a full disk over a metered link can legitimately take a long
+# time; this only bounds a genuinely hung run so it ends as a failure rather than
+# blocking the next night's timer.
+TimeoutStartSec=4h
+# The lab shares one small burstable VM with every app. A backup that starves
+# Caddy of I/O to finish twenty minutes sooner is a bad trade.
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

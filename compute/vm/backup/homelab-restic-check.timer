@@ -1,0 +1,15 @@
+# Weekly trigger for homelab-restic-check.service (#100, risk R13).
+
+[Unit]
+Description=Homelab backup: weekly restic repository check
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/restic_backup.md
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=30m
+# Same reason as the backup timer: after a park of several weeks, the repository
+# should be verified on the first boot back, not on the next Sunday.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

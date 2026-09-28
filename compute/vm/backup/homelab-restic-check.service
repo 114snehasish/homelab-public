@@ -1,0 +1,29 @@
+# homelab-restic-check.service (#100, risk R13)
+#
+# Weekly integrity check of the restic repository: structure plus 5% of pack data,
+# because a structure-only check cannot see bit rot. Rules:
+# /usr/local/sbin/restic-check. Runbook: docs/runbooks/restic_backup.md.
+#
+# Deliberately NOT ordered against the backup unit. A check that failed must not
+# stop tonight's backup from being taken, and a backup that failed must not hide a
+# repository that has quietly rotted. They are two independent signals.
+#
+# No Requires=homelab-persist.target: this reads the repository in blob storage
+# and does not touch /data at all. It is the one part of the backup service that
+# still works while the data disk is unavailable — which is exactly when you want
+# to know whether the backups are readable.
+
+[Unit]
+Description=Homelab backup: restic repository integrity check
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/restic_backup.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/restic-check
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

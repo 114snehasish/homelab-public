@@ -90,3 +90,47 @@ variable "persist_disk_role_name" {
   type        = string
   default     = "Homelab Persist Disk Writer"
 }
+
+# --- Backup identity inputs (E15.4, #100) ---------------------------------
+# The account and its container are created by infra/backup, a separate
+# local-apply module, and read here by name — the same by-name coupling every
+# cross-module reference in this repo uses. Applying infra/backup is therefore a
+# prerequisite of applying this module: a role assignment's scope must already
+# exist, so a missing account fails at *plan*, the same signal a missing persist
+# RG already gives.
+
+variable "backup_storage_account_name" {
+  description = "Storage account holding the restic repository, created by infra/backup in the persist RG. Same name, same default and same meaning as that module's variable"
+  type        = string
+  default     = "homelabpersistbackupsa"
+}
+
+variable "restic_container_name" {
+  description = "The container the backup identity gets Storage Blob Data Contributor over — never the account, even though that account holds nothing else"
+  type        = string
+  default     = "restic"
+}
+
+variable "backup_uami_name" {
+  description = "Name of the user-assigned managed identity restic authenticates as from the edge VM"
+  type        = string
+  default     = "homelab-backup-identity"
+}
+
+# Subscription Owner is a CONTROL-plane role and confers no blob data access, so
+# without this grant `restic` and `az storage blob` both fail from a laptop with
+# AuthorizationPermissionMismatch — an error naming neither the missing role nor
+# the irrelevance of Owner. That is the path #206's disaster-recovery drill and
+# #100's "restore from blob alone, no VM" acceptance criterion both run on, so it
+# is granted rather than rediscovered.
+#
+# A variable rather than unconditional because the principal it grants is
+# whoever runs the apply (data.azurerm_client_config.current.object_id). That is
+# the right answer while this module is applied locally by its owner, and the
+# wrong one the day anything else applies it — at which point this is set false
+# and the grant made deliberately.
+variable "grant_operator_blob_access" {
+  description = "Grant the principal running this apply Storage Blob Data Contributor on the restic container, so a human can restore from blob alone"
+  type        = bool
+  default     = true
+}

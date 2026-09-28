@@ -1,0 +1,20 @@
+# Nightly trigger for homelab-restic-backup.service (#100).
+
+[Unit]
+Description=Homelab backup: nightly restic snapshot of /data
+Documentation=https://github.com/114snehasish/homelab/blob/main/docs/runbooks/restic_backup.md
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# The VM's clock is UTC, so this is ~08:00 IST — deliberately not the middle of
+# the owner's night, because a failure is noticed sooner in the morning. There is
+# no alerting yet: scope item 4 was deferred whole to E08 (#65), so today a
+# failed run is a failed unit in `systemctl --failed` and nothing more.
+RandomizedDelaySec=15m
+# The lab is parked for weeks at a time and resumed at arbitrary hours. Without
+# this, a resume at 09:00 would wait until the next 02:30 for its first backup —
+# so the first day back would have no snapshot at all.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

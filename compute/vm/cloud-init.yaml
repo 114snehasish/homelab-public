@@ -14,6 +14,9 @@ packages:
   - ca-certificates
   - curl
   - gnupg
+  # restic ships its release as a .bz2; bzip2 is not guaranteed on a minimal
+  # Ubuntu image (#100).
+  - bzip2
 
 runcmd:
   # 1. The persistence chain. Its units arrived through write_files; start it
@@ -44,7 +47,36 @@ runcmd:
     rm -f /usr/sbin/policy-rc.d
   - usermod -aG docker azureuser
 
-  # 4. Start Docker through the guard. The job waits for homelab-persist.target,
+  # 4. restic (#100), pinned, from upstream — never apt.
+  #
+  #    Ubuntu 24.04 ships restic 0.16.x. Managed-identity support landed in
+  #    0.17.0, and ADR-0009 §6a requires it: this VM holds no storage credential
+  #    at all, and the backup account takes no shared key even as a fallback. The
+  #    distro package cannot authenticate here and fails with an auth error that
+  #    never mentions the version.
+  #
+  #    The SHA256 is pinned alongside the version. Nothing watches this pin —
+  #    .github/dependabot.yml has no ecosystem for it, same as the Caddy image
+  #    tags — so bumping it is a deliberate act, and it changes custom_data, which
+  #    replaces the VM.
+  #
+  #    Guarded on the unit file existing, because cloud-init.yaml is shared by
+  #    every node while cloud-init.tf ships the backup contract only to the edge
+  #    (the only node carrying the identity restic authenticates as).
+  - |
+    if [ -f /etc/systemd/system/homelab-restic-backup.timer ]; then
+      RESTIC_VERSION=0.19.1
+      RESTIC_SHA256=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+      cd /tmp
+      curl -fsSLo restic.bz2 "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2"
+      echo "${RESTIC_SHA256}  restic.bz2" | sha256sum -c -
+      bunzip2 -f restic.bz2
+      install -m 0755 -o root -g root restic /usr/local/bin/restic
+      rm -f restic
+      systemctl enable --now homelab-restic-backup.timer homelab-restic-check.timer
+    fi
+
+  # 5. Start Docker through the guard. The job waits for homelab-persist.target,
   #    then starts or fails with "Dependency failed" and the chain's reason in
   #    journald. Last on purpose: if the install failed there is no
   #    docker.service, this exits non-zero, and cloud-init status reports it.

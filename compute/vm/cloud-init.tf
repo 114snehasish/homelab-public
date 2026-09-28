@@ -57,6 +57,63 @@ locals {
     "/etc/docker/daemon.json"                                          = { source = "persist/daemon.json", mode = "0644" }
   }
 
+  # The backup contract's static files (#100), same explicit-map discipline as
+  # persist_files above and for the same reason: a fileset() glob would also ship
+  # an editor backup or a .DS_Store, silently changing custom_data and replacing
+  # every VM.
+  #
+  # Shipped ONLY to the node with public_edge = true, because only that node
+  # carries the backup identity infra/identity created and compute/vm attaches. A
+  # private-tier node getting these files would get timers that cannot
+  # authenticate — a nightly failure with no way to succeed.
+  restic_files = {
+    "/usr/local/sbin/restic-backup"                     = { source = "backup/restic-backup.sh", mode = "0755" }
+    "/usr/local/sbin/restic-check"                      = { source = "backup/restic-check.sh", mode = "0755" }
+    "/etc/homelab/restic-excludes"                      = { source = "backup/restic-excludes", mode = "0644" }
+    "/etc/homelab/backup-pre.d/README"                  = { source = "backup/backup-pre.d/README", mode = "0644" }
+    "/etc/systemd/system/homelab-restic-backup.service" = { source = "backup/homelab-restic-backup.service", mode = "0644" }
+    "/etc/systemd/system/homelab-restic-backup.timer"   = { source = "backup/homelab-restic-backup.timer", mode = "0644" }
+    "/etc/systemd/system/homelab-restic-check.service"  = { source = "backup/homelab-restic-check.service", mode = "0644" }
+    "/etc/systemd/system/homelab-restic-check.timer"    = { source = "backup/homelab-restic-check.timer", mode = "0644" }
+  }
+
+  # The one file here that cannot be a static source: AZURE_CLIENT_ID is a
+  # Terraform attribute of the identity this module attaches, so it is rendered
+  # per node.
+  #
+  # Every value in it is an IDENTIFIER, not a credential — a client id, an account
+  # name, two paths. The only secret involved is the repository password, which is
+  # a file on the data disk placed out of band (R13). That is what keeps this
+  # whole file safe to live in custom_data, which is readable by anyone who can
+  # read the VM resource.
+  #
+  # 0640 root:root rather than 0644: nothing on this box needs to read it but
+  # root, and AZURE_CLIENT_ID selecting an identity is not something an
+  # unprivileged process should be able to enumerate.
+  restic_env = {
+    for name in local.public_edge_instances : name => <<-EOT
+      # Rendered by compute/vm/cloud-init.tf (#100). Sourced by
+      # /usr/local/sbin/restic-backup and /usr/local/sbin/restic-check, so a
+      # manual run and the systemd timer see exactly the same environment.
+      #
+      # AZURE_CLIENT_ID is load-bearing: this node carries TWO user-assigned
+      # managed identities (Caddy's DNS-01 identity and this one), which makes an
+      # unpinned managed-identity token request ambiguous. It is exported into the
+      # restic process only — system-wide it would leak into Caddy's container and
+      # select the wrong identity there.
+      #
+      # There is no account key and no SAS: homelabpersistbackupsa sets
+      # shared_access_key_enabled = false, so Entra is the only way in.
+      AZURE_ACCOUNT_NAME=${var.backup_storage_account_name}
+      AZURE_CLIENT_ID=${data.azurerm_user_assigned_identity.backup[name].client_id}
+      RESTIC_REPOSITORY=azure:${var.restic_container_name}:/
+      RESTIC_PASSWORD_FILE=/data/.restic-password
+      # On the pet disk on purpose: the OS disk is destroyed on every park, so a
+      # cache there is rebuilt from scratch on every resume (#207 owns its sizing).
+      RESTIC_CACHE_DIR=/data/.cache/restic
+    EOT
+  }
+
   cloud_init_base = {
     for name, inst in var.instances : name => yamldecode(file("${path.module}/${inst.cloud_init_file}"))
   }
@@ -105,6 +162,19 @@ locals {
               Options=defaults
             EOT
           }],
+          # Edge-only: an empty list for every other node (#100).
+          [for dest, f in local.restic_files : {
+            path        = dest
+            owner       = "root:root"
+            permissions = f.mode
+            content     = file("${path.module}/${f.source}")
+          } if contains(local.public_edge_instances, name)],
+          [for n, content in local.restic_env : {
+            path        = "/etc/homelab/restic.env"
+            owner       = "root:root"
+            permissions = "0640"
+            content     = content
+          } if n == name],
           [{
             path        = "/etc/systemd/system/homelab-persist.target"
             owner       = "root:root"

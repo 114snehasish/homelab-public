@@ -1,0 +1,26 @@
+# Paths excluded from the nightly /data snapshot (#100).
+#
+# The rule: exclude what is REPRODUCIBLE or CIRCULAR, never what is merely large.
+# Everything not listed here is backed up, including /data/k8s-pv (#103), which
+# must be — a k3s persistent volume is a directory on the pet disk and inherits
+# this backup set by design.
+
+# Docker's and containerd's storage roots, moved to /data by #99. Image layers
+# and snapshots are enormous and are re-pullable from a registry; backing them up
+# would inflate the repository for zero recovery value. Container *state* that
+# matters lives in a bind mount under /data/<app>, which IS backed up.
+/data/docker
+/data/containerd
+
+# restic's own cache. Pure derived data, rebuilt on demand, and backing it up
+# would grow the repository roughly in proportion to itself.
+/data/.cache
+
+# The repository password. Circular — it would be encrypted with itself, so it is
+# unreadable exactly when it would be needed — and a restore onto a fresh disk
+# should not silently repopulate a credential. Its copies live in the password
+# manager and in the secret-files container (R13, docs/runbooks/restic_backup.md).
+/data/.restic-password
+
+# ext4 recovery scratch.
+/data/lost+found

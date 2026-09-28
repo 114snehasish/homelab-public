@@ -55,16 +55,27 @@ lifecycle.
 
 `apps/caddy/.env` is never committed — `.gitignore` excludes `apps/**/*.env` (with a
 `!apps/**/*.env.example` negation for the committed template). Copy `.env.example`, fill in the
-two identifiers, and get it onto the VM out-of-band of `rsync` (which this repo's `.gitignore`
+**three** identifiers, and get it onto the VM out-of-band of `rsync` (which this repo's `.gitignore`
 pattern for `apps/**/*.env` will otherwise correctly, and unhelpfully, also make `rsync --exclude`
 redundant to think about — just `scp` it directly instead):
 
 ```bash
 cp apps/caddy/.env.example apps/caddy/.env
-# edit apps/caddy/.env: fill in AZURE_SUBSCRIPTION_ID (see: az account show --query id -o tsv)
+# Fill in two values:
+#   AZURE_SUBSCRIPTION_ID  az account show --query id -o tsv
+#   AZURE_CLIENT_ID        terraform -chdir=infra/identity output -raw edge_dns_client_id
 scp apps/caddy/.env azureuser@<public_ip>:/home/azureuser/apps/caddy/.env
 ssh azureuser@<public_ip> 'chmod 600 /home/azureuser/apps/caddy/.env'
 ```
+
+**`AZURE_CLIENT_ID` is required since E15.4 (#100), and leaving it blank fails in the worst possible
+way.** The edge VM now carries **two** user-assigned managed identities — this one and
+`homelab-backup-identity`, which restic authenticates as — so `DefaultAzureCredential` can no longer
+pick one on its own. Nothing breaks at deploy time: Caddy starts, serves the certificate it already
+has from `/data/caddy`, and looks entirely healthy. It breaks **weeks later, at renewal**, long after
+the change that caused it merged. Use the **edge DNS** identity's client id, not the backup one —
+they are two different identities with two different grants, and the wrong one fails the DNS-01
+challenge with an authorization error rather than a recognisable "wrong identity".
 
 **Assert:** `ssh azureuser@<public_ip> 'stat -c "%a %n" /home/azureuser/apps/caddy/.env'` prints
 `600 /home/azureuser/apps/caddy/.env`. This file holds identifiers, not a secret — but it stays out
@@ -119,6 +130,17 @@ openssl s_client -connect test.az.snehasish-chakraborty.com:443 -servername test
 
 Expect exactly `DNS:*.az.snehasish-chakraborty.com`. Anything more specific means a hostname leaked
 into the cert — check the Caddyfile for an accidental second site block before anything else.
+
+**Certificate-renewal check** (the E15.4 regression above, caught now rather than in six weeks):
+
+```bash
+ssh azureuser@<public_ip> 'docker exec caddy env | grep AZURE_CLIENT_ID'
+ssh azureuser@<public_ip> 'cd apps/caddy && docker compose logs caddy' | grep -iE 'acme|obtain|renew|identity'
+```
+
+Expect the client id to match `terraform -chdir=infra/identity output -raw edge_dns_client_id`, and
+the logs to show Caddy **loading** an existing certificate — never ordering a new one. An ACME order
+after a redeploy is a failure signal, not a nuisance (ADR-0009 §5).
 
 **Persistence check** (cheap version — a full VM-recreate check is the `verify-persistence` skill):
 
