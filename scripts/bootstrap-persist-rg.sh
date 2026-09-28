@@ -16,10 +16,17 @@
 # `infra/identity` reads this RG through a data source; without it, that apply
 # fails at *plan* with a "Resource Group ... was not found" error.
 #
-# It creates NOTHING ELSE — no storage account, no container. ADR-0009's
-# original §2 also had it create a backup storage account; that is superseded by
-# the 2026-09-12 amendment (#205): the `restic` container will live in the
-# existing state storage account `listeninfratfstatesa`, and #100 owns it.
+# It creates NOTHING ELSE — no storage account, no container, and that has now
+# survived two reversals of where the backups live. ADR-0009's original §2 had
+# this script create the backup storage account too; the 2026-09-12 amendment
+# (#205) removed it entirely, putting the `restic` container in the existing
+# state account `listeninfratfstatesa`; the 2026-09-28 amendment (#100) reversed
+# that in turn, because sharing an account with `tfstate` made §6c's
+# account-level versioning and soft delete unreachable and put a cross-region
+# hop on every backup. The backup account is back — `homelabpersistbackupsa`,
+# inside the RG this script creates — but it is owned by the `infra/backup`
+# Terraform module, not by this file. The RG stays out of Terraform; resources
+# inside it do not, exactly as the pet disk already did.
 
 set -euo pipefail
 
