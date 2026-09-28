@@ -83,6 +83,19 @@ To lay this foundation, I deploy the modules in this specific dependency order:
     terraform apply -var="dns_zone_name=az.snehasish-chakraborty.com"
     ```
 
+0b. **Backup account** (`infra/backup`) — *one-time bootstrap, local only, and it runs BEFORE
+    identity*
+    The storage account and container holding the restic repository, inside that same persist
+    resource group. It is a separate module from `infra/storage` because that one runs in CI, and
+    a CI credential able to create the backup account is able to delete it. `infra/identity`
+    scopes a grant to the container this creates, and a role assignment's scope must already
+    exist — so this comes first, or step 0 fails at *plan*.
+    ```bash
+    cd infra/backup
+    terraform init
+    terraform apply
+    ```
+
 1.  **Network** (`infra/network`)  
     Establishing the perimeter and address space.
     ```bash

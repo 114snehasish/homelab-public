@@ -87,7 +87,7 @@ ssh azureuser@<public_ip> 'sudo install -m 0600 -o root -g root /tmp/restic-pass
 
 #    Then put the two copies somewhere that is not the disk it protects (R13):
 az storage blob upload --account-name listeninfratfstatesa --container-name secret-files \
-  --name restic-password --file restic-password --auth-mode login
+  --name homelab-restic-password --file restic-password --auth-mode login
 #    ...and into the password manager. Then delete the local file.
 rm -f restic-password
 
@@ -105,6 +105,21 @@ account compromise therefore never yields both the ciphertext and the key that o
 until Key Vault ([#49](https://github.com/114snehasish/homelab/issues/49) /
 [#50](https://github.com/114snehasish/homelab/issues/50)); a GitHub Actions copy arrives with apps CI
 ([#40](https://github.com/114snehasish/homelab/issues/40)).
+
+**That upload needs a data-plane role on `secret-files`, and Owner is not one** — the same trap as the
+restore path below. `infra/identity` grants the operator a role on the `restic` container, but
+`secret-files` is in the *other* account and outside every module's scope, so it is a one-time
+out-of-band grant. Recorded here rather than left as folklore, because R13 recovery must not depend
+on an account key:
+
+```bash
+ME=$(az ad signed-in-user show --query id -o tsv)
+az role assignment create --assignee-object-id "$ME" --assignee-principal-type User \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<sub>/resourceGroups/do-not-delete/providers/Microsoft.Storage/storageAccounts/listeninfratfstatesa/blobServices/default/containers/secret-files"
+```
+
+Container-scoped, like every other grant in this lab. It takes a minute or so to propagate.
 
 ## FATAL line → cause → recovery
 
@@ -214,8 +229,27 @@ the attack.
 
 Shipped: **blob versioning on, blob and container soft delete at 30 days**, declared in
 `infra/backup`. 30 days rather than the 7-day default because the lab is parked for weeks at a time
-and a 7-day window would expire unobserved. Recover a deleted or overwritten blob with
-`az storage blob undelete` or by listing versions (`--include v`).
+and a 7-day window would expire unobserved.
+
+**The recovery mechanism is not the one you would expect, and this cost time to find out.** With
+versioning **on**, deleting a blob does not produce a *soft-deleted blob* — it produces a non-current
+**version**, and the current blob simply disappears. So `az storage blob list --include d` comes back
+**empty** and looks, briefly, like the mitigation is not working. It is: the data is in the version
+list.
+
+```bash
+# Prove it is recoverable — this is what the delete actually left behind
+az storage blob list --account-name homelabpersistbackupsa --container-name restic \
+  --auth-mode login --include v --query "[?name=='<blob>'].{v:versionId, current:isCurrentVersion}"
+
+# Recover it
+az storage blob undelete --account-name homelabpersistbackupsa --container-name restic \
+  --name '<blob>' --auth-mode login
+```
+
+Verified on 2026-09-28 against the live repository: a `snapshots/<id>` blob was deleted with the same
+rights the VM holds, vanished from a normal listing, was recovered with `undelete`, and
+`restic check` came back clean afterwards.
 
 Not shipped, and recorded as an open ADR item: the strong form — a custom data-plane role granting
 blob read/write/add but **not** `.../blobs/delete`, with `forget --prune` moved off the VM into a
