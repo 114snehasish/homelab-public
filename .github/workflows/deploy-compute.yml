@@ -27,17 +27,24 @@ on:
   # fleet.tfvars is in the filters because it is the fleet: adding or removing a
   # node is an edit to that file and nothing else, and a plan that never ran
   # would be the one that mattered most.
+  #
+  # scripts/write-persist-marker.sh is in the filters because compute/vm embeds
+  # it in every node's custom_data (#99). It is the one input to the mount
+  # contract that lives outside compute/vm/**, and an edit to it replaces every
+  # VM — the plan that says so has to run.
   push:
     branches: [main]
     paths:
       - 'compute/vm/**'
       - 'fleet.tfvars'
+      - 'scripts/write-persist-marker.sh'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
   pull_request:
     paths:
       - 'compute/vm/**'
       - 'fleet.tfvars'
+      - 'scripts/write-persist-marker.sh'
       - '.github/workflows/deploy-compute.yml'
       - '.github/workflows/_terraform.yml'
 

@@ -9,7 +9,7 @@ Since I follow the "Cattle, Not Pets" philosophy, I must prove that destroying m
 ## 1. The Volume Persistence Test
 
 I use **Volume Persistence**. My persistent disk is mounted to `/data` on the VM.
-**Containers are ephemeral** (they disappear on recreation), but **Data is persistent** (safe in `/data`).
+**The VM is ephemeral** (recreated at will), but **data is persistent** (safe in `/data`) — and since #99 that includes Docker's own storage, so containers survive a recreate too.
 
 ### Step 1: Deploy & Setup
 1.  I deploy all my modules:
@@ -55,10 +55,14 @@ Back on my local machine, I simulate a disaster or upgrade by destroying the VM:
 
 ### Step 4: Verify Survival
 1.  I SSH into the **new** VM.
-2.  I check currently running containers:
+2.  I check the persistence chain, then the containers:
     ```bash
+    systemctl is-active homelab-persist.target
+    # "active": /data is mounted and passed the data-guard, so Docker was allowed to start.
+
     docker ps -a
-    # This will be EMPTY. This is correct! New VM = New Docker Engine.
+    # test-redis is still listed. Since #99 Docker's own storage lives on /data too,
+    # so containers survive the VM just like the data does.
     ```
 3.  I start a **new** container mapping to the **same** data:
     ```bash

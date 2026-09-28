@@ -112,7 +112,7 @@ existing issue; none of them blocks that issue from shipping as designed.
 |---|---|---|
 | Wildcard `*.az` resolves to **one** VM's public IP | [#38](https://github.com/114snehasish/homelab/issues/38) | **Does not expire.** Given the sole-edge decision below, the wildcard keeps pointing at the single public node and needs no change in Phase 2. |
 | Caddy is the **single** public edge | [#39](https://github.com/114snehasish/homelab/issues/39) | **Decided: it stays the single edge** (below). |
-| Mount contract is one LUN → one mount point | [#99](https://github.com/114snehasish/homelab/issues/99) | **Expires in E17.6** ([#165](https://github.com/114snehasish/homelab/issues/165)). Shape the v2 contract for a set now. |
+| Mount contract is one LUN → one mount point | [#99](https://github.com/114snehasish/homelab/issues/99) | **Shaped for a set by #99.** `compute/vm/cloud-init.tf` renders one `.mount` unit and one data-guard per entry of a (LUN → mount) set that holds one entry today; E17.6 ([#165](https://github.com/114snehasish/homelab/issues/165)) replaces that single local with a per-instance map. |
 
 **Caddy stays the sole public edge.** Private-tier nodes have no public IP and no TLS
 terminator of their own; Caddy reverse-proxies to them over the VNet (or the tailnet).
@@ -137,6 +137,10 @@ single LUN/mount pair, it gets rewritten a second time; writing it against a
 **(LUN → mount point) set** with one entry costs the same today. Note that switching to
 `templatefile()` makes the file's shell `${DISK}1` an interpolation that must be escaped
 `$${DISK}1`.
+
+**Resolved by #99.** The v2 contract takes the set, and `compute/vm` no longer loads shell through
+`filebase64()` or `templatefile()` at all: `cloud-init.tf` parses `cloud-init.yaml` and appends the
+contract's files to `write_files` verbatim, so the escaping trap above no longer exists.
 
 ### 5. Egress comparison — STUB, do not fill from estimates
 

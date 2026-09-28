@@ -172,13 +172,31 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
     # Note: OS Disk is ephemeral by default
   }
 
-  custom_data = filebase64(each.value.cloud_init_file)
+  # cloud-init.yaml plus the mount contract v2 (#99), assembled in cloud-init.tf.
+  # custom_data is ForceNew: editing any file that feeds it replaces the VM.
+  custom_data = base64encode(local.cloud_init[each.key])
+
+  # Managed storage, which Azure does not bill. The serial log is how a boot the
+  # data-guard held down is read without SSH (`az vm boot-diagnostics
+  # get-boot-log`). Serial console *login* is not available — the node has no
+  # password user — so this is an observation channel, not a recovery path (#99).
+  boot_diagnostics {}
 
   source_image_reference {
     publisher = "Canonical"
     offer     = "ubuntu-24_04-lts"
     sku       = "server"
     version   = "latest"
+  }
+
+  lifecycle {
+    # Azure rejects custom_data above 65,535 decoded bytes, but only at apply.
+    # Fail the plan instead: 87,380 is the base64 length of exactly that many
+    # bytes, and measuring the base64 counts bytes rather than characters.
+    precondition {
+      condition     = length(base64encode(local.cloud_init[each.key])) <= 87380
+      error_message = "custom_data for ${each.key} exceeds Azure's 65,535-byte limit. Shrink the files cloud-init.tf ships, or switch custom_data to base64gzip()."
+    }
   }
 }
 
