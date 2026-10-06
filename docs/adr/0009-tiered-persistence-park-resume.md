@@ -1,6 +1,6 @@
 # ADR-0009: Tiered persistence and the park/resume lifecycle
 
-- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built).
+- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built). **Amended again 2026-09-28 ([#100](https://github.com/114snehasish/homelab/issues/100)): §1, §2, §6a, §6c, §8 and Consequences — the 2026-09-12 (#205) amendment is *reversed* for the storage account. A dedicated backup account `homelabpersistbackupsa` is created in `homelab-persist-rg` by a new local-apply module `infra/backup`; `do-not-delete` and `listeninfratfstatesa` are not touched at all, and §6c is therefore met in full.** See [§2's third amendment block](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg).
 - **Date**: 2026-09-08
 - **Deciders**: repo owner
 - **Related**: [#96](https://github.com/114snehasish/homelab/issues/96) (E15, parent) · [#97](https://github.com/114snehasish/homelab/issues/97) (this ADR) · [#205](https://github.com/114snehasish/homelab/issues/205) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#100](https://github.com/114snehasish/homelab/issues/100) · [#101](https://github.com/114snehasish/homelab/issues/101) · [#102](https://github.com/114snehasish/homelab/issues/102) · [#206](https://github.com/114snehasish/homelab/issues/206) · [#207](https://github.com/114snehasish/homelab/issues/207) · [#103](https://github.com/114snehasish/homelab/issues/103) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [ADR-0013](0013-caddy-edge-dns01-provider-and-credential-model.md) · [#20](https://github.com/114snehasish/homelab/issues/20) (E07) · [#164](https://github.com/114snehasish/homelab/issues/164) · [#165](https://github.com/114snehasish/homelab/issues/165) · [#54](https://github.com/114snehasish/homelab/issues/54) (E06) · [#124](https://github.com/114snehasish/homelab/issues/124)
@@ -39,9 +39,9 @@ epic's original 2026-07-05 scope:
 
 | Tier | What | Where it lives | Who creates it | Survives a park |
 |---|---|---|---|---|
-| **T0 — control** | Terraform state; DNS zone `az.snehasish-chakraborty.com`; the `restic` container in the existing state storage account `listeninfratfstatesa`; Key Vault (E05); both UAMIs and every role assignment; VNet/subnet/NSG | `do-not-delete`, `homelab-rg`, `homelab-identity-rg`, `homelab-persist-rg` | out-of-band script (§2), `infra/dns`, `infra/identity`, `infra/network` | **yes** |
+| **T0 — control** | Terraform state; DNS zone `az.snehasish-chakraborty.com`; the backup storage account `homelabpersistbackupsa` and its `restic` container; Key Vault (E05); all three UAMIs and every role assignment; VNet/subnet/NSG | `do-not-delete`, `homelab-rg`, `homelab-identity-rg`, `homelab-persist-rg` | out-of-band script (§2), `infra/dns`, `infra/backup`, `infra/identity`, `infra/network` | **yes** |
 | **T1 — hot block** | The pet disk: live databases, app state, Prometheus/Loki history, Caddy's cert store and ACME account (`/data/caddy`), k3s PVs (`/data/k8s-pv`) | `homelab-persist-rg`, attached at LUN 10, mounted `/data` | `infra/storage` (Terraform) | **yes** |
-| **T2 — cold logical** | restic repository: encrypted, deduplicated, versioned snapshots of `/data` | `restic` container in `listeninfratfstatesa` (RG `do-not-delete`) | `#100`, running on the VM | **yes** |
+| **T2 — cold logical** | restic repository: encrypted, deduplicated, versioned snapshots of `/data` | `restic` container in `homelabpersistbackupsa` (RG `homelab-persist-rg`) | account and container by `infra/backup`; snapshots by `#100`, running on the VM | **yes** |
 | *(untiered)* | The VM, NIC, public IP, OS disk | `homelab-rg` | `compute/vm` | **no — destroyed by park** |
 
 **Block storage only for anything holding a live database file.** Azure Files was considered and
@@ -71,6 +71,14 @@ blocks only. This is the pattern the repo already runs on: RG `do-not-delete`, t
 and listed under CLAUDE.md's *Never touch*. The persist RG joins that list.
 
 #### Amendment (2026-09-12, #205) — no separate backup storage account
+
+> **⚠️ Superseded in part by the [2026-09-28 (#100) amendment](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg)
+> below.** Everything this block says about the **resource group** — created out-of-band by
+> `scripts/bootstrap-persist-rg.sh`, never Terraform-managed — stands and is shipped. Everything it
+> says about the **storage account** is reversed: a dedicated backup account
+> `homelabpersistbackupsa` *does* exist, in `homelab-persist-rg`, created by `infra/backup`, and
+> `listeninfratfstatesa` is not touched. The block is kept as written because the three costs it
+> records are exactly why the decision was revisited. Read it as history, not as the current design.
 
 **As originally written this section also had the script create a dedicated backup storage account
 and its `restic` container inside `homelab-persist-rg`. That is superseded: no separate backup
@@ -169,7 +177,9 @@ This was chosen over creating them in `infra/identity` (local Owner apply) or `i
   mitigations in §6c, so they get an explicit verification step rather than trust: an assertion of
   versioning + soft-delete retention in `#102`'s drill checklist and in the park runbook. Per the
   amendment above these settings are account-level, so that assertion covers `tfstate` and
-  `secret-files` too.
+  `secret-files` too. **This cost is withdrawn by the 2026-09-28 amendment** — `infra/backup`
+  declares all five properties in Terraform, so a plan re-asserts them; `#102`'s assertion stays as
+  the backstop, because that module has no CI workflow.
 
 **The disk stays in Terraform.** It is created per fleet node by `infra/storage`'s `for_each` over
 `fleet.tfvars` and multiplies with the fleet in E17.6 ([#165](https://github.com/114snehasish/homelab/issues/165)),
@@ -209,9 +219,69 @@ retiring a node's disk is a deliberate local-owner act, and `prevent_destroy` be
 rather than the only thing standing between a bad plan and the data.
 
 What CI can therefore do in `homelab-persist-rg`: create, read and update managed disks, and
-read/write/delete blobs in the `restic` container (data plane, §6a). What it cannot do: delete the
-resource group, the storage account, the container, or any disk. `#205` proves the negatives by
-observation, not by reading role definitions.
+nothing else. It has no blob rights there and no `Microsoft.Storage/*` at all — the data-plane grant
+on the `restic` container belongs to the VM's own backup identity (§6a), never to CI. What CI cannot
+do: delete the resource group, the storage account, the container, or any disk. `#205` proves the
+negatives by observation, not by reading role definitions.
+
+#### Amendment (2026-09-28, #100) — the dedicated backup account returns, in the persist RG
+
+**The 2026-09-12 (#205) amendment above is reversed for the storage account, and only for that.** Its
+resource-group half — `homelab-persist-rg` created out-of-band, never Terraform-managed, plus the
+scoped CI disk grant — stands unchanged and is already shipped.
+
+**Decision: a dedicated backup storage account `homelabpersistbackupsa` in `homelab-persist-rg`,
+holding one container, `restic`, and nothing else. `do-not-delete` and `listeninfratfstatesa` are not
+touched at all.** It is created by a new root module `infra/backup`, applied **locally as Owner**,
+with deliberately no workflow — the same shape `infra/identity` already has, and for the same reason:
+CI's custom role in that RG is `disks/read` + `disks/write`, and granting it
+`Microsoft.Storage/storageAccounts/write` would let CI delete the backup account, which is precisely
+what §2 exists to prevent.
+
+The #205 arrangement was reasoned as "the lab does not need a second protected account to hold one
+more container". True as far as it went, and it bought three problems, each recorded in that
+amendment as an accepted cost:
+
+1. **Cross-region.** The state account is in `centralindia`, the lab in `southindia`, so every backup
+   write and every restore read crossed a region — on the tier whose entire purpose is recovery.
+2. **Versioning and soft delete are account-level.** Meeting §6c's R22 mitigation meant changing the
+   protective settings of the account holding `tfstate` and `secret-files`. That is a change to a
+   *Never touch* resource, which made §6c effectively unreachable rather than merely awkward.
+3. **`secret-files` shares that account.** One mistaken account-scoped grant would have handed an
+   internet-facing edge VM the Terraform state and that container along with the backups.
+
+A dedicated account dissolves all three at once, and the resource group it belongs in is the one this
+lab already created to hold what must outlive everything else. The disk was never the only thing that
+belonged there. The result is also schematically clearer: `do-not-delete` is the pre-existing estate
+inherited from outside this repo, and `homelab-persist-rg` is *this lab's* persistence.
+
+**Three consequences follow, and all three are improvements:**
+
+- **§6c is now met in full** — blob versioning enabled, blob and container soft delete at 30 days, as
+  §6c specified all along. The "consciously accept a weaker posture" escape hatch that amendment
+  created is no longer needed and is withdrawn.
+- **Account keys are disabled outright** (`shared_access_key_enabled = false`). §6a's rule "never an
+  account key" stops being a policy someone can forget and becomes a property of the account: no
+  account key works, for anybody, ever. This could never have been done to `listeninfratfstatesa`,
+  whose `tfstate` backend depends on key access being *available* even though this repo's CI does not
+  use it.
+- **The protective settings are reconciled by a plan again.** The Consequences section below recorded
+  it as a defect that Terraform would never notice versioning or soft delete being switched off.
+  `infra/backup`'s `blob_properties` block makes both plan-detectable. Honest limit: that module has
+  no CI workflow, so drift is caught on demand rather than continuously — the same standing as
+  `infra/identity` today.
+
+**One thing gets worse and is recorded rather than hidden.** T1 and T2 are co-regional again, both in
+`southindia`, so a regional loss takes both. #205's cross-region split was a side effect of reusing
+the state account, never a disaster-recovery strategy, and §5's accepted residual risk is unchanged —
+what changes is that co-regional is now a deliberate choice. `Standard_LRS` was chosen over `GRS`
+against the ≤ ₹400/mo parked budget; GRS remains the obvious lever if that risk is ever re-priced.
+
+**The bootstrap order grows by one step**, and it is load-bearing because a role assignment's scope
+must already exist:
+
+`scripts/bootstrap-persist-rg.sh` → `infra/dns` → **`infra/backup`** → `infra/identity` →
+`infra/network` → `infra/storage` → `compute/vm`. Four of those are local applies as Owner.
 
 ### 3. The marker file is an identity record, not a presence check
 
@@ -306,7 +376,7 @@ open.** Per (LUN → mount) entry, every boot: `homelab-persist-prepare@<lun>.se
 ### 4. What persists, and what resets every cycle
 
 **Persists.** *T0:* Terraform state; the DNS zone and its static records; the backup storage account
-and restic repository; both user-assigned identities and every role assignment; VNet, subnet, NSG and
+and restic repository; all three user-assigned identities and every role assignment; VNet, subnet, NSG and
 the resource groups themselves; Key Vault once E05 lands. *T1, on `/data`:* app state and live
 databases; Prometheus and Loki history; Caddy's certificates and ACME account; k3s PVs; and, since
 `#99`, Docker's and containerd's storage — images, snapshots, volumes, networks and containers.
@@ -377,13 +447,14 @@ records why, about the state container:
 Putting an account key on the internet-facing edge VM would undo E02's posture in the one place that
 holds every backup.
 
-**Decision: a second user-assigned managed identity, `homelab-backup-identity`, holding `Storage Blob
+**Decision: a third user-assigned managed identity, `homelab-backup-identity`, holding `Storage Blob
 Data Contributor` scoped to the `restic` container — not the storage account.** Same container-scope
-reasoning as the `tfstate` grant, and since the 2026-09-12 amendment it is *literally* the same
-account: `restic` now shares `listeninfratfstatesa` with `tfstate` and `secret-files`. An
-account-scoped grant here would hand the internet-facing edge VM the Terraform state and that third
-container along with the backups. The comment already at `infra/identity/main.tf` above
-`tfstate_blob_contributor` states the rule; it now guards three containers rather than one.
+reasoning as the `tfstate` grant. Since the 2026-09-28 amendment the container lives in its own
+account, `homelabpersistbackupsa`, which holds nothing else — so an account-scoped grant here would
+be *merely* wider than needed rather than catastrophic. It is still refused: the scope is the
+container, because the rule is about what the credential can reach, not about what happens to be
+next to it today. That account additionally sets `shared_access_key_enabled = false`, which turns
+"never an account key on the VM" from a rule into a property of the account.
 restic supports this: its Azure backend uses the Azure SDK
 credential chain and its documentation states that *"if run on Azure, restic will automatically use
 service accounts configured via the standard environment variables or Workload / Managed
@@ -439,21 +510,27 @@ or simply misbehaving VM can delete every backup it has, on schedule. That VM is
 public-facing host, running an internet-exposed edge. The credential being used as designed is the
 attack.
 
-**Shipped now:** blob versioning and soft delete, retention **30 days**. The window is not arbitrary
+**Shipped now (by `infra/backup`, per the 2026-09-28 amendment):** blob versioning and soft delete,
+retention **30 days**, on an account that holds backups and nothing else. The window is not arbitrary
 — the lab is *parked for weeks at a time*, so a 7-day window would expire unobserved while nobody is
 looking at anything. 30 days exceeds a realistic detection window for a lab that is only
 intermittently attended. Per §2 these settings are no longer reconciled by any Terraform plan, so
 `#102`'s drill and the park runbook assert them.
 
-> **Corrected by the 2026-09-12 amendment.** This section said "on the container", which is wrong:
-> blob versioning (`isVersioningEnabled`) and soft delete (`deleteRetentionPolicy`) are
-> **blob-service properties, i.e. account-level** — there is no per-container form of either. Since
-> the `restic` container now lives in `listeninfratfstatesa`, applying this mitigation changes
-> behaviour for `tfstate` and `secret-files` as well. Live state of that account on 2026-09-12: blob
-> soft delete **enabled at 7 days**, container soft delete **enabled at 7 days**, versioning
-> **off** — so `#100` must raise retention to 30 days and switch versioning on *for the whole
-> account*, or consciously accept a weaker R22 posture than this section specifies. It is listed as
-> an open item rather than assumed.
+> **Corrected by the 2026-09-12 amendment; the objection withdrawn 2026-09-28.** This section said
+> "on the container", which is technically wrong: blob versioning (`isVersioningEnabled`) and soft
+> delete (`deleteRetentionPolicy`) are **blob-service properties, i.e. account-level** — there is no
+> per-container form of either. That correction stands and is worth keeping, because it is the kind
+> of thing that is rediscovered expensively.
+>
+> What no longer stands is the consequence it drew. While the container lived in
+> `listeninfratfstatesa`, applying this mitigation would have changed behaviour for `tfstate` and
+> `secret-files` too — a change to a *Never touch* resource, which is why "consciously accept a
+> weaker R22 posture" was offered as an alternative. The 2026-09-28 amendment gives the repository
+> its **own** account, so account-level and backup-only are now the same scope. **This section is met
+> in full and the weaker-posture escape hatch is withdrawn.** For the record, `listeninfratfstatesa`
+> remains as it was on 2026-09-12 — blob soft delete 7 days, container soft delete 7 days, versioning
+> off — and `#100` deliberately did not touch it.
 
 **Target state, recorded as an open item rather than pretended:** split the credential so the VM
 cannot delete at all — a **custom data-plane role** granting blob read/write/add but **not**
@@ -513,12 +590,12 @@ At a **stated ₹85/USD** — the rate `docs/roadmap.md`'s R19 already implies (
 | Line item | USD/mo | ₹/mo |
 |---|---|---|
 | Data disk — 20 GiB StandardSSD_LRS, billed at E4 (32 GiB) | `$2.40` | **₹204** |
-| `restic` container in `listeninfratfstatesa` — Hot LRS, ~10 GB repo × 1.5 for versions/soft-delete ≈ 15 GB | `$0.36` | **₹30** |
+| `restic` container in `homelabpersistbackupsa` — Hot LRS, `southindia`, ~10 GB repo × 1.5 for versions/soft-delete ≈ 15 GB | `$0.36` | **₹30** |
 | Blob transactions while parked (nothing is running) | ~`$0.00` | ₹0 |
-| Inter-region egress, `southindia` → `centralindia` (see below) | — | — |
+| Inter-region egress | `$0.00` | ₹0 |
 | Azure DNS public zone (first 25 zones) + query volume at lab scale | `$0.50` | **₹43** |
 | Terraform state blobs (`do-not-delete`, pre-existing, < 1 MB) | ~`$0.00` | ₹0 |
-| VNet, subnet, NSG, all resource groups, both UAMIs, every role assignment | `$0.00` | ₹0 |
+| VNet, subnet, NSG, all resource groups, all three UAMIs, every role assignment | `$0.00` | ₹0 |
 | **Total** | **`$3.26`** | **≈ ₹277** |
 
 **≈ ₹123 of headroom** against the ≤ ₹400 target — which is thinner than it looks, and one specific
@@ -531,13 +608,13 @@ several times over. **The budget lives here and the teardown lives in `#164`**, 
 be reasoned about separately: E17.5 owns NAT Gateway teardown *in park from day one*, or this table
 is fiction.
 
-**The egress line is zero while parked and non-zero while running.** Per the 2026-09-12 amendment the
-`restic` repository lives in `listeninfratfstatesa`, which is in `centralindia` while the lab runs in
-`southindia`, so every backup write and every restore read crosses a region. Parked, nothing runs and
-nothing is transferred, which is why the total above is unaffected. Running, it is a per-GB charge on
-the nightly delta rather than on the repository size, so at lab volumes it is small — but it is not
-zero, and it makes a full restore both slower and billable. `#102`'s measurement is what settles the
-real figure; this line exists so the measurement is not mistaken for a discrepancy.
+**The egress line is zero, and as of the 2026-09-28 amendment it is zero while running too.** The
+2026-09-12 amendment put the repository in `listeninfratfstatesa` (`centralindia`) while the lab runs
+in `southindia`, so every backup write and every restore read crossed a region — small at lab volumes,
+but non-zero and slower on the one path whose purpose is recovery. `homelabpersistbackupsa` is in
+`southindia`, co-regional with the disk and the VM, so that charge does not arise. **`#102`'s
+open item to measure it is therefore void, not outstanding.** The trade taken in exchange is recorded
+in §5 and in the 2026-09-28 amendment: co-regional means a regional loss takes both tiers.
 
 Transient lines not counted: the 7-day fallback snapshot `#98` retains after the migration, and the
 running cost of the VM/NIC/public IP while the lab is *not* parked (the Standard static public IP
@@ -557,9 +634,10 @@ exists, it supersedes this table and this ADR is edited to match.
   seven open decisions the architecture review raised now has an answer a later child can implement
   rather than invent.
 - **The bootstrap grows, and rebuild ordering gets longer.** A from-scratch rebuild is now: the
-  out-of-band `az` script → `infra/dns` → `infra/identity` (which reads the DNS zone, per ADR-0013,
-  and now also grants into the persist RG) → `infra/network` → `infra/storage` → `compute/vm`. Three
-  of those steps are local applies as Owner. In a repo whose modules are otherwise coupled only by
+  out-of-band `az` script → `infra/dns` → `infra/backup` → `infra/identity` (which reads the DNS zone
+  per ADR-0013, the backup account per §6a, and grants into the persist RG) → `infra/network` →
+  `infra/storage` → `compute/vm`. **Four** of those steps are local applies as Owner, since the
+  2026-09-28 amendment added `infra/backup`. In a repo whose modules are otherwise coupled only by
   naming convention, that ordering is real and is only written down in prose — here and in
   `docs/oidc_bootstrap.md`.
 - **The guard is fail-closed, which means this ADR deliberately creates a "the lab will not come up"
@@ -567,16 +645,20 @@ exists, it supersedes this table and this ADR is edited to match.
   and it is also a new way to be down; the re-bless procedure in §3 is the documented recovery, and
   it must be in the runbook before `#99` ships, not after the first time it fires — it shipped with
   `#99`, in [`docs/runbooks/data_guard.md`](../runbooks/data_guard.md).
-- **The backup account's protective settings are unreconciled.** §2's second condition. Terraform
-  will never notice if versioning or soft delete is turned off, so the drill checks it. Since the
-  2026-09-12 amendment that account is `listeninfratfstatesa` and the settings are account-level, so
-  the drill's assertion covers the state blobs too.
-- **Everything is LRS, on both tiers — and since the 2026-09-12 amendment, no longer in one
-  region.** T1 is in `southindia`, T2 in `centralindia`. That is a side effect of reusing the state
-  account, not a disaster-recovery strategy: two regions do not help when the *failure* being
-  designed for is the repository being deleted by its own credential (R22). §5's accepted residual
-  risk is unchanged; what changed is that the backup path now pays egress to cross a region it was
-  never trying to cross.
+- **The backup account's protective settings are reconciled again, on demand.** This bullet used to
+  read "unreconciled": while the container lived in `listeninfratfstatesa`, Terraform would never
+  notice versioning or soft delete being switched off, and `#102`'s drill was the only check. Since
+  the 2026-09-28 amendment `infra/backup` declares both in a `blob_properties` block, so a plan
+  detects the drift. The honest limit is that the module has **no CI workflow** — drift is caught
+  whenever someone runs a plan, not continuously — so `#102`'s assertion is still worth keeping as
+  the backstop, it is simply no longer the only thing standing there.
+- **Everything is LRS, on both tiers, and since the 2026-09-28 amendment both are in `southindia`
+  again.** The 2026-09-12 arrangement had T2 in `centralindia`, which was a side effect of reusing the
+  state account rather than a disaster-recovery strategy — and two regions do not help against the
+  failure actually being designed for, which is the repository being deleted by its own credential
+  (R22). Co-regional is now the deliberate choice: it removes the egress and the slower restore, and
+  it leaves §5's regional-loss gap exactly where §5 already put it, as an accepted residual risk for a
+  homelab. `Standard_LRS` over `GRS` is the budget call; GRS is the lever if that risk is re-priced.
 - **This overturns text already merged in three places** — `#98` (Cool tier), `#205`
   (`Disk Contributor`, and Terraform-managed persist resources) and `docs/roadmap.md`'s E15 section.
   `docs/roadmap.md` is corrected in the same PR, following ADR-0013's precedent; `#98` and `#205`
@@ -589,9 +671,10 @@ exists, it supersedes this table and this ADR is edited to match.
 ## Open items
 
 - [x] Pin the exact action list for the custom disk role — done in [#205](https://github.com/114snehasish/homelab/issues/205), recorded in §2. The negatives are proven *by definition reading* (`az role definition list` asserts two actions and one assignable scope); the **behavioural** proof still has no home, because no CI workflow plans `infra/identity` — it arrives with [#98](https://github.com/114snehasish/homelab/issues/98), the first change that makes CI touch the persist RG.
-- [ ] Raise blob soft-delete retention to 30 days and enable versioning on `listeninfratfstatesa`, or consciously accept a weaker R22 posture ([#100](https://github.com/114snehasish/homelab/issues/100), §6c amendment). These are account-level and therefore also change `tfstate` and `secret-files`.
-- [ ] Measure the `southindia` → `centralindia` egress the amendment introduces and fold it into §8 ([#102](https://github.com/114snehasish/homelab/issues/102)).
-- [ ] Verify restic against the real storage account with a **user-assigned** managed identity, and pin the restic version, before [#100](https://github.com/114snehasish/homelab/issues/100) ships — the current stable docs describe managed-identity support but do not document how a user-assigned identity is selected. Verified, not projected (ADR-0013's standard).
-- [ ] Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a).
+- [x] Raise blob soft-delete retention to 30 days and enable versioning, or consciously accept a weaker R22 posture — **resolved by the 2026-09-28 amendment, and neither branch was taken.** The repository moved to its own account (`homelabpersistbackupsa`), where versioning and 30-day blob and container soft delete are declared in `infra/backup` and apply to backups only. `listeninfratfstatesa` was not touched.
+- [x] ~~Measure the `southindia` → `centralindia` egress~~ — **void.** The 2026-09-28 amendment makes T2 co-regional with T1, so the charge does not arise. [#102](https://github.com/114snehasish/homelab/issues/102) drops this measurement rather than reporting zero.
+- [x] Verify restic against the real storage account with a **user-assigned** managed identity, and pin the restic version, before [#100](https://github.com/114snehasish/homelab/issues/100) ships — verified end-to-end against `homelabpersistbackupsa` on 2026-09-28, with `shared_access_key_enabled = false` so no account-key path existed even as a fallback. Pinned at **0.19.1**. Evidence on #100.
+- [x] Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a) — done; `.env.example` now carries it as a required value rather than a commented-out fallback.
 - [ ] Replace §8's computed table with the figure measured in [#102](https://github.com/114snehasish/homelab/issues/102), or correct the design if reality disagrees.
-- [ ] R22 strong form: custom no-delete data role for the VM + `forget --prune` in a scheduled CI job with its own identity ([#100](https://github.com/114snehasish/homelab/issues/100), §6c).
+- [ ] R22 strong form: custom no-delete data role for the VM + `forget --prune` in a scheduled CI job with its own identity ([#100](https://github.com/114snehasish/homelab/issues/100), §6c). Still open — `#100` shipped the versioning/soft-delete half only.
+- [ ] Failure alerting for the backup and check timers. `#100`'s scope item 4 specified a Telegram curl and it was **deferred whole to E08** ([#65](https://github.com/114snehasish/homelab/issues/65)) rather than built as a one-off — a failed run currently surfaces as a failed systemd unit in journald and pages nobody. Recorded so the gap is a decision rather than an oversight. Note [#207](https://github.com/114snehasish/homelab/issues/207)'s scope item 4 refers to "`#100`'s Telegram-curl pattern", which does not exist.

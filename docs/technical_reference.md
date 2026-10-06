@@ -15,6 +15,7 @@ As I expand the lab, new modules will be added, but these core components provid
 ├── compute
 │   └── vm          # [Ephemeral] The Workload Node
 ├── infra
+│   ├── backup      # [Control plane] The restic repository's account (bootstrapped locally)
 │   ├── identity    # [Control plane] CI's Azure identity (bootstrapped locally)
 │   ├── network     # [Persistent] The Network Backbone
 │   └── storage     # [Persistent] The Data Layer
@@ -105,13 +106,23 @@ it (#162), so the key `homelab-edge` reproduces the deployed node's names byte-f
   also what keeps per-app hostnames out of a publicly mirrored zone (risk R6).
 - `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
   *its own* persistent disk, at the entry's `data_disk_lun` (default 10).
-- ↳ `identity` (dynamic block, E03.3 #39): `UserAssigned`, attached only to the `public_edge`
-  instance — the `homelab-edge-dns-identity` UAMI from `infra/identity`, looked up by
-  `data "azurerm_user_assigned_identity" "edge_dns"`. Adding this to an already-deployed VM is an
-  **in-place update**, not a replacement, on this repo's pinned `azurerm ~> 5.0` — confirmed
-  against the real VM (`0 to add, 1 to change, 0 to destroy`; apply completed in 18s, no restart).
-  Gives Caddy (`apps/caddy`) a credential-free path to the DNS-01 challenge; see
-  [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
+- ↳ `identity` (dynamic block, E03.3 #39; extended E15.4 #100): `UserAssigned`, attached only to the
+  `public_edge` instance — **two** UAMIs from `infra/identity`, `homelab-edge-dns-identity` and
+  `homelab-backup-identity`, looked up by `data "azurerm_user_assigned_identity" "edge_dns"` and
+  `"backup"`. Adding an identity to an already-deployed VM is an **in-place update**, not a
+  replacement, on this repo's pinned `azurerm ~> 5.0` — confirmed against the real VM (`0 to add, 1
+  to change, 0 to destroy`; apply completed in 18s, no restart). They give Caddy (`apps/caddy`) a
+  credential-free path to the DNS-01 challenge and restic a credential-free path to blob storage; see
+  [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md) and ADR-0009 §6a.
+  **Two identities make managed-identity auto-selection ambiguous**, so both consumers pin
+  `AZURE_CLIENT_ID` in their own environment — Caddy's in its compose env file, restic's in
+  `/etc/homelab/restic.env`. Dropping either pin does not fail at deploy time; Caddy's surfaces weeks
+  later as a certificate that did not renew.
+- ↳ `backup/` (E15.4, #100): the restic backup service — two systemd timers, their units, the
+  wrapper scripts and the exclude list, shipped into `custom_data` by `cloud-init.tf` **only** for
+  the `public_edge` node, since only that node carries the backup identity. Both units
+  `Requires=homelab-persist.target`, so a backup can never run against a `/data` that is the OS disk
+  or half-mounted. Runbook: [`runbooks/restic_backup.md`](runbooks/restic_backup.md).
 
 **No NSG association lives here.** Per [ADR-0012](adr/0012-workload-tiering-cidr-and-nsg-ownership.md)
 the subnet is the single owner of NSG policy; the NIC-level association this module used to
@@ -213,11 +224,21 @@ Both credentials use issuer `https://token.actions.githubusercontent.com` and au
   costs one `infra/identity` re-apply, not a repo-variable update. `compute/vm` looks it up by
   name and attaches it only to the instance with `public_edge = true`. See
   [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
+- `azurerm_user_assigned_identity.homelab_backup` (`homelab-backup-identity`, E15.4 #100): a third
+  UAMI, restic's. Same reasoning as the edge one — user-assigned so it survives the VM being cattle,
+  no `prevent_destroy` because nothing outside this module pins its `client_id`. It holds exactly one
+  grant, `Storage Blob Data Contributor` on the `restic` **container** in `homelabpersistbackupsa`,
+  which `infra/backup` creates. Never the account: the scope states what the credential may reach,
+  not what happens to sit beside it today.
 
-### Role assignments (E02.2, #34; extended by E15.0, #205)
-The CI identity holds **five** role assignments, each scoped as narrowly as the thing it enables.
-Four are listed here; the fifth, `Managed Identity Operator`, is in the edge-identity table below
-because that is where its scope lives — but it is a CI grant and `granted_scopes` counts it.
+### Role assignments (E02.2, #34; extended by E15.0 #205 and E15.4 #100)
+The CI identity holds **six** role assignments, each scoped as narrowly as the thing it enables.
+Four are listed here; the other two are both `Managed Identity Operator`, one per attachable UAMI,
+listed with the identities they scope to — but they are CI grants and `granted_scopes` counts them.
+
+That duplication is why `granted_scopes` became a **list of `{role, scope}` objects** in #100: as a
+map keyed by role name, two `Managed Identity Operator` rows are two identical keys and the plan
+fails with "Duplicate object attribute key".
 
 | Role | Scope | Enables |
 |---|---|---|
@@ -228,10 +249,13 @@ because that is where its scope lives — but it is a CI grant and `granted_scop
 
 The scopes are located by read-only data sources; nothing outside `homelab-identity-rg` is ever
 managed by this module. Two grants are deliberately absent: anything at subscription scope, and
-any role on the *storage account* (which would carry `listKeys`, a bearer credential for every
-container in it — the exact credential class E02 exists to eliminate). That account holds three
-containers — `tfstate`, `secret-files`, and `restic` once E15.4 (#100) lands — so the
-container-scope rule is load-bearing rather than stylistic.
+any role on a *storage account* (which would carry `listKeys`, a bearer credential for every
+container in it — the exact credential class E02 exists to eliminate). `listeninfratfstatesa` holds
+two containers, `tfstate` and `secret-files`, so the container-scope rule there is load-bearing rather
+than stylistic. The same rule is applied to the `restic` container in `homelabpersistbackupsa` even
+though that account holds nothing else — and that account additionally sets
+`shared_access_key_enabled = false`, which turns the rule into a property no configuration mistake can
+undo.
 
 ### Custom role definition (E15.0, #205)
 
@@ -320,6 +344,51 @@ filter matches it. Both are recoverable from git history if wanted.
 
 There is still no `deploy-identity.yml`; the module's `.tf` files are covered by the repo-wide
 `lint.yml` gate.
+
+---
+
+## 5b. Control-Plane Module: `infra/backup`
+
+**Purpose**: Holds Tier 2 — the storage account and container the restic repository lives in
+(E15.4, #100). Like `infra/identity`, it is **applied locally as Owner and has no workflow**, and for
+a related reason: `infra/storage` runs in CI, and creating a storage account in `homelab-persist-rg`
+needs `Microsoft.Storage/storageAccounts/write` there — a CI credential able to create the backup
+account is able to delete it, which is what ADR-0009 §2 exists to prevent.
+
+State key `homelab.backup.tfstate`. Applying it is a prerequisite of `infra/identity`, because a role
+assignment's scope must already exist.
+
+### Resources
+
+- `azurerm_storage_account.homelab_backup` (`homelabpersistbackupsa`): `StorageV2`, `Standard_LRS`,
+  `southindia`, access tier **Hot**, `prevent_destroy`.
+- `azurerm_storage_container.restic`: one container, private, `prevent_destroy`. Addressed by
+  `storage_account_id` and **never** the legacy `storage_account_name` — that argument drives the
+  provider through the storage *data* plane, which cannot work with shared keys disabled.
+
+### The three settings that carry the design
+
+| Setting | Why |
+|---|---|
+| `shared_access_key_enabled = false` | ADR-0009 §6a's "never an account key on the VM" becomes a property of the account rather than a rule. No key works for anybody. It also means an *account* SAS cannot be minted — §6a's fallback must be a **user-delegation** SAS. |
+| `blob_properties.versioning_enabled = true` | §6c's R22 mitigation. The VM can delete the backups it writes; a version survives that. |
+| `delete_retention_policy.days = 30` (blob and container) | The window must outlast a park, which lasts weeks. The 7-day default would expire unobserved. |
+
+**Why this account exists at all** is the 2026-09-28 ADR amendment. The #205 amendment had the
+`restic` container share `listeninfratfstatesa` with `tfstate` and `secret-files`; since versioning
+and soft delete are blob-*service* properties, meeting §6c there would have changed behaviour for the
+Terraform state. A dedicated account makes §6c reachable, removes a cross-region hop, and shrinks the
+blast radius of an account-scoped grant to backups alone.
+
+**Public network access stays enabled and there is no `network_rules` block**, deliberately: #206's
+disaster-recovery drill restores from blob alone, with no VM, from whatever machine the operator has.
+A private endpoint or default-deny rule would break the one recovery path this account exists to
+serve — silently, at the worst possible moment. The compensating controls are the three settings
+above plus container-scoped RBAC in `infra/identity`. Checkov's findings to that effect are skipped
+inline with that reason rather than suppressed in a baseline file.
+
+Drift is caught **on demand, not continuously** — no workflow plans this module — which is why
+#102's drill keeps asserting the same settings as a backstop.
 
 ---
 

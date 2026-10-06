@@ -18,17 +18,35 @@ There is deliberately **no `deploy-identity.yml`**. The five module workflows st
 | Resource | Name |
 |---|---|
 | Resource group | `homelab-identity-rg` |
-| User-assigned managed identity | `homelab-github-actions-identity` |
+| **CI identity** (UAMI) | `homelab-github-actions-identity` |
 | Federated credential (main) | `homelab-github-main` → subject `repo:114snehasish/homelab:ref:refs/heads/main` |
 | Federated credential (PRs) | `homelab-github-pull-request` → subject `repo:114snehasish/homelab:pull_request` |
-| Role assignment | `Contributor` on `homelab-rg` |
-| Role assignment | `Storage Blob Data Contributor` on the `tfstate` container |
-| Role assignment | `Reader` on the `homelab-vm-ssh-key-2` resource |
-| Role **definition** (custom) | `Homelab Persist Disk Writer`, scoped to `homelab-persist-rg` |
-| Role assignment | `Homelab Persist Disk Writer` on `homelab-persist-rg` |
+| ↳ Role assignment | `Contributor` on `homelab-rg` |
+| ↳ Role assignment | `Storage Blob Data Contributor` on the `tfstate` **container** |
+| ↳ Role assignment | `Reader` on the `homelab-vm-ssh-key-2` resource |
+| ↳ Role **definition** (custom) | `Homelab Persist Disk Writer`, scoped to `homelab-persist-rg` |
+| ↳ Role assignment | `Homelab Persist Disk Writer` on `homelab-persist-rg` |
+| ↳ Role assignment | `Managed Identity Operator` on `homelab-edge-dns-identity` |
+| ↳ Role assignment | `Managed Identity Operator` on `homelab-backup-identity` |
+| **Caddy's DNS-01 identity** (UAMI, E03.3 #39) | `homelab-edge-dns-identity` |
+| ↳ Role assignment | `DNS Zone Contributor` on `az.snehasish-chakraborty.com` |
+| **restic's identity** (UAMI, E15.4 #100) | `homelab-backup-identity` |
+| ↳ Role assignment | `Storage Blob Data Contributor` on the `restic` **container** |
+| **The human applying this** | whoever runs the apply |
+| ↳ Role assignment | `Storage Blob Data Contributor` on the `restic` container (`var.grant_operator_blob_access`) |
 
-It does **not** create `homelab-persist-rg` itself — that is [step 0c](#0c--create-the-persist-resource-group), an
-out-of-band script, for the reasons ADR-0009 §2 gives.
+Three identities, three separate lists of grants — `granted_scopes`, `edge_granted_scopes` and
+`backup_granted_scopes` — which must never be diffed against each other as if they were one.
+
+The operator grant exists because **subscription Owner is a control-plane role and confers no blob
+data access**: without it, `restic` and `az storage blob` both fail from a laptop with
+`AuthorizationPermissionMismatch`, an error naming neither the missing role nor the irrelevance of
+Owner. That is the path #206's disaster-recovery drill runs on.
+
+It does **not** create `homelab-persist-rg` itself — that is
+[step 0c](#0c--create-the-persist-resource-group), an out-of-band script, for the reasons ADR-0009 §2
+gives — nor the backup storage account, which is
+[step 0d](#0d--apply-infrabackup-e154-100), a separate Terraform module.
 
 Both credentials use issuer `https://token.actions.githubusercontent.com` and audience
 `api://AzureADTokenExchange`.
@@ -108,6 +126,36 @@ this step and the apply fails at **plan** — before touching anything — with 
 
 It needs a subscription-level write, which is exactly what CI does not have, and is why #205 exists
 as a local bootstrap at all.
+
+### 0d — apply `infra/backup` (E15.4, #100)
+
+```bash
+terraform -chdir=infra/backup init -input=false
+terraform -chdir=infra/backup apply
+```
+
+Creates the backup storage account `homelabpersistbackupsa` and its single container `restic` inside
+the resource group step 0c just made — Tier 2, the restic repository the edge VM writes nightly.
+
+**Why this runs before step 1, and not after.** `infra/identity` scopes the backup identity's
+`Storage Blob Data Contributor` grant to that container, and **a role assignment's scope must already
+exist**. Skip this and step 1 fails at *plan* with a "Storage Account ... was not found" error naming
+`homelabpersistbackupsa` — the same ordering signal step 0c gives, for the same reason.
+
+**Why it is Terraform rather than a script, unlike step 0c.** ADR-0009 §2's "never Terraform-managed"
+rule applies to the **resource group**. The pet disk — more precious than its own backup — already
+sits inside that group fully Terraform-managed behind `prevent_destroy`, so holding the backup to a
+stricter standard than the data it backs up would be incoherent. Terraform also buys back something
+the ADR records as a defect under a script: nothing would ever notice versioning or soft delete being
+switched off. Both resources carry `prevent_destroy`.
+
+**Why it is a separate module rather than part of `infra/storage`.** That module runs in CI, and
+creating a storage account there needs `Microsoft.Storage/storageAccounts/write` on the persist RG —
+a CI credential that can create the backup account can delete it. Like `infra/identity`, this module
+has deliberately no workflow.
+
+It needs `Microsoft.Storage` registered (step 0a registers `Microsoft.Compute`; check this one the
+same way) and Owner on the subscription, because nothing else in the repo can write to that group.
 
 ## Step 1 — apply locally
 
@@ -215,9 +263,29 @@ az role assignment list --assignee <principal_id> --all \
   --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
 
-Exactly five rows, matching `terraform output granted_scopes`. **Nothing at subscription
-scope** — a `/subscriptions/<id>` scope with no resource group after it means something granted
-this identity far more than #34 intends; find out what before going near #35.
+Exactly **six** rows since E15.4 (#100), matching `terraform output granted_scopes`. **Nothing at
+subscription scope** — a `/subscriptions/<id>` scope with no resource group after it means something
+granted this identity far more than #34 intends; find out what before going near #35.
+
+Note the two rows that read `Managed Identity Operator`: they are scoped to two *different*
+identities (`homelab-edge-dns-identity` and `homelab-backup-identity`), and each lets `compute/vm`
+attach one of them to the edge VM. That duplication is also why `granted_scopes` is a **list of
+`{role, scope}` objects rather than a map** since #100 — as a map keyed by role name, two identical
+keys failed the plan with "Duplicate object attribute key".
+
+Then the other two principals, which are separate lists on purpose and must never be diffed against
+the CI identity's as if they were one:
+
+```bash
+# Caddy's DNS-01 identity — one row, the zone only
+az role assignment list --assignee "$(terraform -chdir=infra/identity output -raw edge_dns_client_id)" --all \
+  --query "[].{role:roleDefinitionName, scope:scope}" -o table
+
+# restic's identity — one row, and the scope must end in /containers/restic.
+# A scope ending at .../storageAccounts/homelabpersistbackupsa is the failure this checks for.
+az role assignment list --assignee "$(terraform -chdir=infra/identity output -raw backup_client_id)" --all \
+  --query "[].{role:roleDefinitionName, scope:scope}" -o table
+```
 
 > `Managed Identity Operator` (E03.3, #39) was missing from `granted_scopes` until E15.0 (#205),
 > so this comparison used to show a spurious extra row on the Azure side. If you are reading an

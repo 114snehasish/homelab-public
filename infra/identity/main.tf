@@ -307,3 +307,98 @@ resource "azurerm_role_assignment" "persist_disk_writer" {
 
   skip_service_principal_aad_check = true # same replication-lag reason as above
 }
+
+# --- Backup identity (E15.4, #100) ----------------------------------------
+#
+# A THIRD UAMI, unrelated to the two above: the identity restic authenticates as
+# from the edge VM, so the internet-facing host holds no credential for the
+# backups it writes. ADR-0009 §6a.
+#
+# User-assigned, not system-assigned, for the same reason as the edge DNS
+# identity: compute/vm is cattle and destroy.yml tears it down every park cycle,
+# and a system-assigned identity dies with the VM and mints a new principal_id,
+# breaking the role assignment below on every recreate.
+#
+# No prevent_destroy, unlike homelab_github_oidc: nothing outside this module
+# pins this identity's client_id. compute/vm reads it by name and renders it into
+# the VM's restic environment on every apply, so recreating it costs one
+# infra/identity apply plus one compute/vm apply — not a repo-variable update.
+resource "azurerm_user_assigned_identity" "homelab_backup" {
+  name                = var.backup_uami_name
+  location            = azurerm_resource_group.homelab_identity_rg.location
+  resource_group_name = azurerm_resource_group.homelab_identity_rg.name
+
+  tags = merge(local.tags, { purpose = "restic-backup" })
+}
+
+# Created by infra/backup (local apply, as Owner, no workflow) and read here by
+# name. Safe as a data source here and only here: this module is never run by CI,
+# which holds disks/read + disks/write in that resource group and no
+# Microsoft.Storage/* at all. compute/vm, which IS run by CI, takes the account
+# name as a plain string for exactly that reason.
+data "azurerm_storage_account" "backup" {
+  name                = var.backup_storage_account_name
+  resource_group_name = var.persist_rg_name
+}
+
+locals {
+  # Same string shape as tfstate_container_scope above, and built the same way
+  # rather than via an azurerm_storage_container data source: that data source
+  # reads the storage DATA plane, and this account takes no shared key at all
+  # (infra/backup sets shared_access_key_enabled = false), so a data-plane read
+  # would depend on the very grant being created below.
+  restic_container_scope = "${data.azurerm_storage_account.backup.id}/blobServices/default/containers/${var.restic_container_name}"
+}
+
+# restic's only Azure right: read and write blobs in one container.
+#
+# Scoped to the CONTAINER, not the account — and deliberately still so, even
+# though that account now holds nothing else. The scope states what the
+# credential may reach, not what happens to sit beside it today; an account-scoped
+# grant here would silently widen the moment anything else lands in the account,
+# and the principal holding it runs on the lab's only internet-facing host.
+#
+# This is the narrowest built-in that lets restic work. `Storage Blob Data
+# Contributor` can also DELETE blobs, which is risk R22 — the credential being
+# used as designed is the attack. §6c's shipped mitigation is versioning plus
+# 30-day soft delete on the account (infra/backup); the strong form — a custom
+# data-plane role without .../blobs/delete, plus `forget --prune` moved into a
+# scheduled CI job with its own identity — is an open ADR item, not shipped here.
+resource "azurerm_role_assignment" "backup_restic_blob_contributor" {
+  scope                = local.restic_container_scope
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.homelab_backup.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
+}
+
+# Lets the CI identity ATTACH the backup identity to the edge VM in compute/vm,
+# and nothing wider — the second grant of this role, alongside the edge DNS one
+# above. Reader is not enough: attaching a UAMI needs
+# Microsoft.ManagedIdentity/userAssignedIdentities/assign/action, a write, and a
+# Reader grant plans clean in compute/vm then fails at apply with an error
+# naming neither "Reader" nor "assign".
+resource "azurerm_role_assignment" "ci_backup_identity_operator" {
+  scope                = azurerm_user_assigned_identity.homelab_backup.id
+  role_definition_name = "Managed Identity Operator"
+  principal_id         = azurerm_user_assigned_identity.homelab_github_oidc.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
+}
+
+# The human. See var.grant_operator_blob_access for why Owner is not enough and
+# why this is a variable rather than unconditional.
+#
+# Not skip_service_principal_aad_check: this principal is a user that has existed
+# for years, not a service principal created moments ago in this same apply, so
+# the replication-lag reason the other assignments cite does not apply and the
+# existence check is worth keeping.
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_role_assignment" "operator_restic_blob_contributor" {
+  count = var.grant_operator_blob_access ? 1 : 0
+
+  scope                = local.restic_container_scope
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}

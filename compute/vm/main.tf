@@ -101,6 +101,22 @@ data "azurerm_user_assigned_identity" "edge_dns" {
   resource_group_name = var.identity_rg_name
 }
 
+# restic's identity (#100), created once by infra/identity and looked up here by
+# name — same by-name coupling as the edge DNS identity above, and keyed off the
+# same 0-or-1 set, so it only ever exists to be attached to the edge node.
+#
+# The edge node therefore carries TWO user-assigned identities, which is a
+# behaviour change and not just an addition: managed-identity auto-selection is
+# unambiguous only while there is exactly one. Both consumers now pin
+# AZURE_CLIENT_ID — Caddy in its own environment file, restic in the one
+# cloud-init.tf renders. See ADR-0013 and CLAUDE.md; the failure mode if either
+# pin is dropped is a certificate that silently does not renew, weeks later.
+data "azurerm_user_assigned_identity" "backup" {
+  for_each            = toset(local.public_edge_instances)
+  name                = var.backup_identity_name
+  resource_group_name = var.identity_rg_name
+}
+
 resource "azurerm_dns_a_record" "wildcard_record" {
   for_each            = toset(local.public_edge_instances)
   name                = "*"
@@ -160,8 +176,11 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
   dynamic "identity" {
     for_each = each.value.public_edge ? [1] : []
     content {
-      type         = "UserAssigned"
-      identity_ids = [data.azurerm_user_assigned_identity.edge_dns[each.key].id]
+      type = "UserAssigned"
+      identity_ids = [
+        data.azurerm_user_assigned_identity.edge_dns[each.key].id,
+        data.azurerm_user_assigned_identity.backup[each.key].id,
+      ]
     }
   }
 

@@ -118,3 +118,32 @@ variable "identity_rg_name" {
   type        = string
   default     = "homelab-identity-rg"
 }
+
+# --- Backup identity and repository (E15.4, #100) -------------------------
+# All three default, like the edge DNS variables above: every fleet built against
+# this repo's infra/identity and infra/backup gets the same names, so no workflow
+# env var is needed for any of them.
+
+variable "backup_identity_name" {
+  description = "Name of the user-assigned managed identity (created in infra/identity) that restic authenticates to blob storage as — attached only to the instance with public_edge = true, alongside the edge DNS identity"
+  type        = string
+  default     = "homelab-backup-identity"
+}
+
+# A plain string, never a data "azurerm_storage_account": this module runs in CI,
+# and the CI identity holds Microsoft.Compute/disks/{read,write} in the persist
+# resource group and no Microsoft.Storage/* at all. A data source here would fail
+# CI at *plan* with AuthorizationFailed — the same trap disk_rg_name documents.
+# Widening the CI role to fix that would hand CI the ability to delete the backup
+# account, which is what ADR-0009 §2 exists to prevent.
+variable "backup_storage_account_name" {
+  description = "Storage account holding the restic repository, created by infra/backup. Rendered into /etc/homelab/restic.env as AZURE_ACCOUNT_NAME"
+  type        = string
+  default     = "homelabpersistbackupsa"
+}
+
+variable "restic_container_name" {
+  description = "Container within that account holding the repository — the second field of the restic repository URL"
+  type        = string
+  default     = "restic"
+}
