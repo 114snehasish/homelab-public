@@ -4,6 +4,8 @@ description: Run the volume-persistence test from docs/verification_guide.md —
 disable-model-invocation: true
 ---
 
+> **Local only — stop in a cloud session.** This skill runs `terraform destroy` and `apply`, and the cloud-session identity is read-only (`docs/runbooks/claude_cloud_environment.md`). Before anything else run `echo "$CLAUDE_CODE_REMOTE"`: if it prints `true`, **stop**, tell the user to run this skill locally (as Owner, after `az login`), and do nothing else — no workaround, no partial run.
+
 Prove that destroying the VM does not destroy the data disk ("cattle VM, pet disk"). Follows @docs/verification_guide.md.
 
 Prerequisites: `infra/network`, `infra/storage`, and `compute/vm` are applied; Azure creds loaded (`set -a; source .env; set +a`); SSH access works from this machine (the NSG whitelists the IP that last ran the network apply).

@@ -61,10 +61,15 @@ az login
 export ARM_SUBSCRIPTION_ID=<subscription_id>
 ```
 
-The old service-principal credential was retired in E02.4, so nothing reads
+The old service-principal credential was retired in E02.4, so nothing in CI or on my machine reads
 `ARM_CLIENT_SECRET` any more — if it's still exported in your shell it will override
 `az login` and break the plan. I also create `terraform.tfvars` locally where a module needs
 one (copy from `.example`).
+
+The one exception is my Claude Code cloud environment (claude.ai/code): a **read-only** service
+principal — it can plan and inspect, never apply — whose secret lives in claude.ai, not in this
+repo or its settings. CI stays fully keyless. See the
+**[Claude Cloud Environment Runbook](docs/runbooks/claude_cloud_environment.md)**.
 
 ### Deployment Order
 To lay this foundation, I deploy the modules in this specific dependency order:

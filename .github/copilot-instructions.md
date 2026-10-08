@@ -68,10 +68,16 @@ terraform -chdir=<module> plan -input=false        # this is also how you "plan 
   `ARM_CLIENT_ID` / `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID` (identifiers, not secrets) plus
   `ARM_USE_OIDC=true` and `ARM_USE_AZUREAD=true` (the latter is load-bearing — without it the
   backend tries `listKeys`, which the identity is deliberately denied, and `init` fails). No client
-  secret exists anywhere.
+  secret exists anywhere in CI.
 - **Local:** `az login` as yourself, then `export ARM_SUBSCRIPTION_ID=<id>`. Keep
   `ARM_CLIENT_ID` / `ARM_CLIENT_SECRET` / `ARM_TENANT_ID` **unset** — if exported they override the
   `az login` session and every plan fails auth.
+- **Claude Code cloud sessions** (claude.ai/code, `homelab` environment) are the one exception, and
+  why the rule above says "local": they set those `ARM_*` variables **on purpose**, for a
+  *read-only* service principal (`Reader` + `Storage Blob Data Reader` on the `tfstate` container)
+  that can plan but never apply — no `apply`/`destroy`/`import`/state edits, plans run with
+  `-lock=false`, `infra/cloudflare` is skipped. CI is unaffected and still fully keyless. See
+  `docs/runbooks/claude_cloud_environment.md`.
 - Remaining repo secrets are all non-Azure: `DNS_ZONE_NAME`, `RESOURCE_GROUP_NAME`, `CLOUDFLARE_*`,
   mirror tokens.
 

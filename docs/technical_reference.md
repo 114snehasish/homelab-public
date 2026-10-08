@@ -541,6 +541,7 @@ under Azure is drift.
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` | Repo secrets | The last real API credential in CI; migrates to Key Vault in E05.4. |
 | `PUBLIC_REPO_URL`, `PUBLIC_REPO_TOKEN` | Repo secrets | `mirror.yml` only. |
 | Local Azure auth | `az login` on the operator's machine | Owner identity + `ARM_SUBSCRIPTION_ID`. This is also the break-glass path (risk **R8**). |
+| Claude Code cloud-session auth | Variables of the `homelab` environment in claude.ai/code (not repo Settings) | `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/`ARM_TENANT_ID`/`ARM_SUBSCRIPTION_ID` for the read-only service principal `homelab-claude-cloud-reader` (`Reader` + `Storage Blob Data Reader` on the `tfstate` container). **The only client secret in the lab** — a scoped exception to keyless auth, acceptable because it cannot write; plan-only. See [the runbook](runbooks/claude_cloud_environment.md). |
 
 Gone as of E02.4 (#36): `ARM_CLIENT_SECRET`, the whole duplicate `AZURE_*` set, and the old
 service principal's client secret in Entra (rotated, then removed). Nothing in
