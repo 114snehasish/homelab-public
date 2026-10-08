@@ -186,14 +186,23 @@ az version
 It does not install `jq`, which the sign-in hook uses for its Terraform version check; the cloud image
 already has it (jq 1.7 on 2026-10-08), and the hook says so and carries on if it ever does not.
 
+The plugin cache is created `-m 1777` (world-writable with the sticky bit, like `/tmp`). That is the
+owner's choice and is kept as supplied. It would only matter if the container ever had more than one
+user, since anyone could then plant a provider binary in the cache; today it is single-tenant and the
+session runs as root, so a stricter mode would work too.
+
 ## How a session signs in
 
 1. The session starts in the `homelab` environment with the variables above and `CLAUDE_CODE_REMOTE=true`.
 2. The `SessionStart` hook in `.claude/settings.json` (matcher `startup|resume`, synchronous, 60 s)
-   runs `scripts/cloud-session-init.sh`. It runs `az login --service-principal` unless `az` is already
-   signed in as this identity, selects the subscription, compares `terraform version` with
-   `.terraform-version`, and prints one line — which reaches the session as context — saying it is the
-   read-only identity and that cloud sessions are plan-only. It always exits 0.
+   runs `scripts/cloud-session-init.sh`. It runs `az login --service-principal` **every time**, even
+   when `az` already has an account cached: `az account show` and `az account get-access-token` answer
+   from the local profile and token cache, so a cached login would hide a rotated or expired secret
+   until a token refresh failed mid-session. A warm login takes about a second. It then selects the
+   subscription, compares `terraform version` with `.terraform-version`, and prints one line — which
+   reaches the session as context. That line says "signed in as read-only identity" only if the login
+   and the subscription selection both worked; otherwise it says what failed, and still carries the
+   plan-only reminder. It always exits 0.
 3. Terraform needs no sign-in of its own; azurerm and the backend read `ARM_*` directly.
 4. **Project threads and multi-repo sessions run no repo hooks.** There, `az` is not signed in until
    `bash scripts/cloud-session-init.sh` is run by hand — which is safe to repeat. A session that finds
@@ -223,8 +232,8 @@ for `infra/network`, `infra/dns`, `infra/storage` and `compute/vm` all completed
 az ad app credential reset --id <appId> --display-name claude-cloud-<yyyymm> --years 1 --query password -o tsv
 
 # 2. Paste it into ARM_CLIENT_SECRET in the homelab environment (claude.ai); clear the terminal.
-# 3. Start a NEW session — a running one keeps the old value — and confirm the hook prints its
-#    "signed in" line.
+# 3. Start a NEW or RESUMED session — a running one keeps the old value; the hook signs in again
+#    each time, so the new secret takes effect at once — and confirm it prints its "signed in" line.
 ```
 
 To avoid the gap between step 1 and step 2, add `--append`, update the variable, confirm a new session
@@ -287,7 +296,11 @@ a bump is a deliberate change, and the cloud environment is a second place that 
 | Hook: `az login failed (AADSTS7000222)` | The client secret has expired | Rotate it (above) |
 | Hook: `az login failed (AADSTS7000215)` | The secret value is wrong: the secret *ID* was pasted instead of its *value*, there is stray whitespace, or it was rotated and the variable not updated | Re-copy it, or rotate |
 | Hook: `az login failed (AADSTS700016)` | `ARM_CLIENT_ID` or `ARM_TENANT_ID` does not match the app registration, or the app was deleted | Compare with `az ad sp list --display-name homelab-claude-cloud-reader`; recreate it if it is gone |
-| Hook: `az login failed with no AADSTS code` | The network, not the credential: `login.microsoftonline.com` is unreachable | Read the proxy status endpoint; fix the egress policy |
+| Hook: `az login failed (AADSTS90002)` | `ARM_TENANT_ID` could not be resolved: a wrong or mistyped tenant ID (a malformed value ends up here too) | Re-copy the tenant ID from the app registration |
+| Hook: `az login failed: the identity authenticated but has no role on any subscription` | The secret is fine; the `Reader` assignment is missing — deleted, or created moments ago and still propagating (a minute or so). `az` reports this as *No subscriptions found*, with no `AADSTS` code | `az role assignment list --assignee <appId> --all -o table` should show two rows; re-create the missing one per *Creating it*, or wait a minute |
+| Hook: `az login failed: no AADSTS code and no recognised message` | Neither of the above, which usually means the network: `login.microsoftonline.com` is unreachable | Read the proxy status endpoint; fix the egress policy |
+| Hook: `signed in, but could not select the subscription …` | The login worked, but `ARM_SUBSCRIPTION_ID` is not a subscription this identity can see: a wrong value, or `Reader` still propagating | Check the variable; `az account list -o table` shows what the identity sees |
+| Hook: `signed in, but ARM_SUBSCRIPTION_ID is not set …` | The variable was removed | Set it; Terraform needs it too |
 | Hook: `Terraform X installed but .terraform-version pins Y` | The setup script's `TF_VERSION` is stale | *When `.terraform-version` changes* |
 | `terraform init`: `Failed to query available provider packages`, or a 403 on a download | `registry.terraform.io` or `releases.hashicorp.com` is not allowed | Allow it |
 | `terraform init`: backend `AuthorizationPermissionMismatch`, or an error naming `listKeys` | `ARM_USE_AZUREAD` is not `true`, or the `Storage Blob Data Reader` grant on the `tfstate` container is missing or still propagating (a minute or so) | Check both |
@@ -296,7 +309,8 @@ a bump is a deliberate change, and the cloud environment is a second place that 
 | A tool reports `CONNECT tunnel failed, response 403` | The host is not on the allowlist — by design for `api.cloudflare.com` | Do not work around it |
 | The first session after a setup-script change is slow | The environment cache is rebuilding | Wait |
 
-The `AADSTS` meanings are from Microsoft's Entra error reference.
+The `AADSTS` meanings are from Microsoft's Entra error reference, except `AADSTS90002`, which was checked
+live on 2026-10-08: `az` reports it for any tenant value it cannot resolve, a malformed one included.
 
 ## Related
 

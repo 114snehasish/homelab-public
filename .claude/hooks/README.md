@@ -67,11 +67,14 @@ unset.
 an expired secret or a missing tool each print one line of diagnosis and let the session start. A
 SessionStart hook's stdout is handed to Claude as context, which is how those lines — and the
 plan-only reminder — reach it. The script never prints the client secret, nor `az`'s own error text
-(it can carry the client and tenant IDs): on a failed login it reports only the `AADSTS` code.
+(it can carry the client and tenant IDs): on a failed login it reports only the `AADSTS` code and a
+one-line reading of it, or, for `az`'s *No subscriptions found*, that the identity has no role.
 
 **Registered** in `../settings.json` for `startup|resume`, synchronous, 60 s timeout. The session
-waits for it; that is the point, since `az` is then signed in before the first prompt. Idempotent:
-a resumed session that is already signed in as the identity skips the login.
+waits for it; that is the point, since `az` is then signed in before the first prompt. Safe to repeat:
+it signs in again every time, even when `az` has an account cached (about a second when warm), because
+`az account show` only reads the local profile and would hide a rotated or expired secret. The success
+line is printed only after the login and the subscription selection both worked.
 
 **Requirements.** `az` and `jq` on `PATH`; bash 3.2 is enough, so macOS's `/bin/bash` works. The environment's setup script installs
 `az`; `jq` is already in the cloud image and the setup script does not install it. `terraform` is
