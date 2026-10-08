@@ -73,7 +73,7 @@ plan-only reminder — reach it. The script never prints the client secret, nor 
 waits for it; that is the point, since `az` is then signed in before the first prompt. Idempotent:
 a resumed session that is already signed in as the identity skips the login.
 
-**Requirements.** `az` and `jq` on `PATH` (and bash 4+). The environment's setup script installs
+**Requirements.** `az` and `jq` on `PATH`; bash 3.2 is enough, so macOS's `/bin/bash` works. The environment's setup script installs
 `az`; `jq` is already in the cloud image and the setup script does not install it. `terraform` is
 needed too, for the version check (`terraform version` against `.terraform-version`, warning on
 drift). A missing tool is reported, not fatal.

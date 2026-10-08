@@ -21,6 +21,11 @@
 # from starting. Problems are reported on stdout, which a SessionStart hook hands to
 # Claude as context.
 #
+# Stays bash-3.2-compatible on purpose: macOS /bin/bash is 3.2, and that is where this
+# gets run by hand. So no ${var,,} / ${var^^}, mapfile or associative arrays. Failing
+# open makes this matter: a bash-4-only construct would not stop the script, bash would
+# just drop the statement it sits in and carry on to the success banner.
+#
 # Prints nothing secret. The client secret goes to `az login` and nowhere else, and
 # az's own error text is never echoed (it can carry the client and tenant IDs) —
 # only the AADSTS code in it.
@@ -28,6 +33,8 @@
 [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
 
 say() { printf 'cloud-session-init: %s\n' "$*"; }
+# Lower-case via tr, not ${1,,}: that needs bash 4 (see the header).
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 if [ -z "${ARM_CLIENT_ID:-}" ] || [ -z "${ARM_CLIENT_SECRET:-}" ] || [ -z "${ARM_TENANT_ID:-}" ]; then
   say "ARM_* not set on this cloud environment; az is NOT signed in. Is the session running in the 'homelab' environment?"
@@ -44,7 +51,7 @@ fi
 # enough: someone who ran `az login` as themselves in this container would make the
 # read-only banner below untrue.
 signed_in=$(az account show --query user.name --output tsv 2>/dev/null)
-if [ "${signed_in,,}" != "${ARM_CLIENT_ID,,}" ]; then
+if [ "$(lower "$signed_in")" != "$(lower "$ARM_CLIENT_ID")" ]; then
   # --password=… and not `--password …`: az parses a secret starting with "-" as an
   # option otherwise.
   if ! err=$(az login --service-principal \
