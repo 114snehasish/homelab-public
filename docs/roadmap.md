@@ -113,7 +113,7 @@ Sequencing rules that are **not optional**:
 | R5 | Auto-apply fires while workflows are edited | #28 gate flip is the first workflow PR |
 | R6 | Public mirror leaks attack surface / secrets | Wildcard cert + wildcard DNS (no enumeration); admin UIs tailnet-only (#46); secrets only in Key Vault (E05) |
 | R7 | Vaultwarden before a tested restore | #45 blocked on #58 |
-| R8 | OIDC cutover bricks all CI at once | #35 validated per-module while the old secrets still existed; #36 deleted them only after. Closed — with the SP credential retired, break-glass is now a local apply as the owner (`az login` + `ARM_SUBSCRIPTION_ID`), which is the only non-CI path to Azure |
+| R8 | OIDC cutover bricks all CI at once | #35 validated per-module while the old secrets still existed; #36 deleted them only after. Closed — with the SP credential retired, break-glass is now a local apply as the owner (`az login` + `ARM_SUBSCRIPTION_ID`), which is the only non-CI path to Azure that can write (a read-only [Claude Code cloud-session identity](runbooks/claude_cloud_environment.md) can plan and inspect, never apply) |
 | R9 | Agent pods borrow the VM's managed identity via IMDS | #89 NetworkPolicy blocks 169.254.169.254 from the runner namespace |
 | R10 | Anthropic API spend invisible to Azure budgets | #93 console spend ceiling + monthly cost review |
 | R11 | Prompt injection via untrusted issue text | PR-only GitHub App, human-only merges, owner-applied trigger labels (#90–#92) |

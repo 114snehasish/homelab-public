@@ -180,6 +180,11 @@ unset ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID
 > authentication outright while looking as though your `az login` did not take. Either unset
 > them, or use a fresh shell that never exported them.
 
+> **Not in a Claude Code cloud session.** There, `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/`ARM_TENANT_ID`
+> are set on purpose: they belong to a *read-only* service principal that can plan but never apply,
+> so it can do none of this. The `unset` is for the local, Owner-run apply. See the
+> [cloud environment runbook](runbooks/claude_cloud_environment.md).
+
 `ARM_SUBSCRIPTION_ID` is safe to keep and is still required — it is an identifier, not a
 credential. Your account needs Owner or User Access Administrator over the three scopes in step
 4, plus the rights to create a resource group and a managed identity.
@@ -473,8 +478,10 @@ authenticates as this identity, so the window between recreating the UAMI and up
 variables is a window in which nothing deploys. Break-glass is a local apply **as the owner**
 (`az login`, then `export ARM_SUBSCRIPTION_ID=<id>` with the `ARM_CLIENT_*` variables unset).
 That is the escape hatch behind roadmap risk **R8**, and since E02.4 (#36) retired the service
-principal it is the only credential outside CI that can still reach Azure — and the only way to
-act on Azure at all during that window.
+principal it is the only credential outside CI that can still write to Azure — and the only way to
+act on Azure at all during that window. (The read-only Claude Code cloud-session identity can read
+Azure too, but it cannot change anything, so it is no help here — see the
+[cloud environment runbook](runbooks/claude_cloud_environment.md).)
 
 ## Branch scoping of the `push:` triggers (closed in E02.3, #35)
 

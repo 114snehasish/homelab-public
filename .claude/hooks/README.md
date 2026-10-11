@@ -1,6 +1,6 @@
 # Claude Code hooks
 
-Hooks that guard this repo when it's edited through Claude Code.
+Hooks that guard this repo, and set up its cloud sessions, when it's edited through Claude Code.
 
 ## `block-env.js` — block `.env` secrets access (PreToolUse)
 
@@ -48,3 +48,51 @@ printf '%s' '{"tool_name":"Read","tool_input":{"file_path":".env"}}' | node .cla
 # allowed (prints nothing)
 printf '%s' '{"tool_name":"Read","tool_input":{"file_path":".env.example"}}' | node .claude/hooks/block-env.js
 ```
+
+## `cloud-session-init.sh` — sign `az` in for cloud sessions (SessionStart)
+
+Signs the Azure CLI in as the read-only service principal `homelab-claude-cloud-reader` when a
+session starts in the personal Claude Code **cloud** environment (claude.ai/code, `homelab`), then
+prints a one-line reminder that cloud sessions are plan-only. Terraform itself needs none of this:
+azurerm reads `ARM_*` from the environment, so only `az` needs an explicit login. What the identity
+is, what it may do and how the environment is configured:
+[`docs/runbooks/claude_cloud_environment.md`](../../docs/runbooks/claude_cloud_environment.md).
+Source: [`scripts/cloud-session-init.sh`](../../scripts/cloud-session-init.sh).
+
+**Only acts in cloud sessions.** It exits at once unless `CLAUDE_CODE_REMOTE=true`, so on a laptop
+it is a silent no-op — there `az login` as yourself is the auth path, and `ARM_CLIENT_*` must stay
+unset.
+
+**Fails open.** Every path exits 0 (deliberately no `set -e`): a missing variable, a failed login,
+an expired secret or a missing tool each print one line of diagnosis and let the session start. A
+SessionStart hook's stdout is handed to Claude as context, which is how those lines — and the
+plan-only reminder — reach it. The script never prints the client secret, nor `az`'s own error text
+(it can carry the client and tenant IDs): on a failed login it reports only the `AADSTS` code and a
+one-line reading of it, or, for `az`'s *No subscriptions found*, that the identity has no role.
+
+**Registered** in `../settings.json` for `startup|resume`, synchronous, 60 s timeout. The session
+waits for it; that is the point, since `az` is then signed in before the first prompt. Safe to repeat:
+it signs in again every time, even when `az` has an account cached (about a second when warm), because
+`az account show` only reads the local profile and would hide a rotated or expired secret. The success
+line is printed only after the login and the subscription selection both worked.
+
+**Requirements.** `az` and `jq` on `PATH`; bash 3.2 is enough, so macOS's `/bin/bash` works. The environment's setup script installs
+`az`; `jq` is already in the cloud image and the setup script does not install it. `terraform` is
+needed too, for the version check (`terraform version` against `.terraform-version`, warning on
+drift). A missing tool is reported, not fatal.
+
+**Not run everywhere.** Project threads and multi-repo sessions don't run repo hooks. There, run
+`bash scripts/cloud-session-init.sh` by hand.
+
+**Testing.** From the repo root:
+
+```bash
+# local: silent no-op, exit 0
+bash scripts/cloud-session-init.sh; echo "exit=$?"
+# cloud, a variable missing: one diagnostic line, exit 0
+env -u ARM_CLIENT_ID CLAUDE_CODE_REMOTE=true bash scripts/cloud-session-init.sh; echo "exit=$?"
+```
+
+To exercise the failed-login path, set `CLAUDE_CODE_REMOTE=true`, made-up `ARM_CLIENT_ID`,
+`ARM_TENANT_ID` and `ARM_CLIENT_SECRET` values, and `AZURE_CONFIG_DIR=$(mktemp -d)` so your real
+`az` login is untouched. It should print an `AADSTS` code — never an ID — and still exit 0.
