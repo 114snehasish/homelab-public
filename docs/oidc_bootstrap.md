@@ -365,7 +365,7 @@ resource group is stored *on* that resource group and dies with it — and creat
 subscription-level write regardless. So CI can manage the existing `homelab-rg` and could never
 bring it back after a deletion.
 
-This is tolerable by design: `destroy.yml` deliberately never destroys `infra/network`, and the
+This is tolerable by design: neither `park.yml` nor `destroy.yml` ever destroys `infra/network`, and the
 break-glass path is a local apply as the owner via `az login` (roadmap risk **R8**; before E02.4
 it was the service principal). If the RG is ever lost, recreate it locally, then re-apply
 `infra/identity` to restore the role assignment that went down with it.
@@ -499,5 +499,5 @@ Keep it that way. A wildcard federated credential is the wrong fix — it would 
 branch in the repo, including one an attacker with push access could create.
 
 The same rule governs `workflow_dispatch`, which inherits the ref it is dispatched from: run
-`deploy.yml`, `destroy.yml` and manual applies **from `main`**. Dispatching from a branch fails
+`deploy.yml`, `destroy.yml`, `park.yml`, `resume.yml` and manual applies **from `main`**. Dispatching from a branch fails
 at auth. This is also why a gated apply cannot be proven on a PR — it has to happen after merge.

@@ -3,7 +3,8 @@
 # This single file is the whole authoring surface for multiplicity. The map key
 # IS the instance name — every name a node produces derives from it — so adding
 # a node is one entry here and nothing else: no workflow edit, no new state key,
-# no new concurrency group, no destroy.yml leg.
+# no new concurrency group, no park/destroy leg (park and resume loop over the
+# live fleet).
 #
 # Read by two modules through _terraform.yml's `var_file` input:
 #   compute/vm     -> -var-file=../../fleet.tfvars   (VM, NIC, public IP, DNS A record,

@@ -221,6 +221,23 @@ to this one.
 blocked on that run finishing, and a repack is minutes of work whose only benefit is storage cost, on
 the one run where the thing being protected is about to be destroyed.
 
+### How park calls it (#101)
+
+`_park.yml` (behind both `park.yml` and `destroy.yml`) runs `scripts/lifecycle/park-backup.sh` on
+every node through Azure managed Run Command — no SSH. That wrapper:
+
+- refuses unless `homelab-persist.target` is active, and refuses on a node with no backup contract
+  (restic is edge-only until #166), so park never destroys a node whose disk was not backed up;
+- **waits for an in-flight nightly** rather than racing its `forget --prune` exclusive lock — and
+  never stops the timer, because an aborted park leaves the node running and it still needs tonight's
+  backup;
+- runs `restic-backup final`, then reads the snapshot back with `restic cat snapshot <id>`, and prints
+  `snapshot_id=<id>` as its last stdout line (Run Command returns only the last 4 KB).
+
+Any failure fails the `backup` job, which leaves the stop and the destroy skipped. The snapshot ids
+land in the park run's job summary; they are tagged `final`, so `restic snapshots --tag final` lists
+every park. A park dispatched with `skip_backup` takes no snapshot at all, and says so.
+
 ## Protection against the backup service itself (R22)
 
 The VM holds write access to this container and runs `forget --prune` on a timer, so a compromised or

@@ -1,6 +1,6 @@
 # ADR-0009: Tiered persistence and the park/resume lifecycle
 
-- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built). **Amended again 2026-09-28 ([#100](https://github.com/114snehasish/homelab/issues/100)): §1, §2, §6a, §6c, §8 and Consequences — the 2026-09-12 (#205) amendment is *reversed* for the storage account. A dedicated backup account `homelabpersistbackupsa` is created in `homelab-persist-rg` by a new local-apply module `infra/backup`; `do-not-delete` and `listeninfratfstatesa` are not touched at all, and §6c is therefore met in full.** See [§2's third amendment block](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg).
+- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built). **Amended again 2026-09-28 ([#100](https://github.com/114snehasish/homelab/issues/100)): §1, §2, §6a, §6c, §8 and Consequences — the 2026-09-12 (#205) amendment is *reversed* for the storage account. A dedicated backup account `homelabpersistbackupsa` is created in `homelab-persist-rg` by a new local-apply module `infra/backup`; `do-not-delete` and `listeninfratfstatesa` are not touched at all, and §6c is therefore met in full.** See [§2's third amendment block](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg). **Amended again 2026-10-13 ([#101](https://github.com/114snehasish/homelab/issues/101)): §4 and §5 — park is backup → graceful stop → deallocate → destroy, the apps layer moved to `/data/apps`, `destroy.yml` became park plus the Cloudflare leg, and CI reaches nodes through Azure Run Command (new risk R23).** See [§5's amendment block](#amendment-2026-10-13-101--park-and-resume-as-workflows).
 - **Date**: 2026-09-08
 - **Deciders**: repo owner
 - **Related**: [#96](https://github.com/114snehasish/homelab/issues/96) (E15, parent) · [#97](https://github.com/114snehasish/homelab/issues/97) (this ADR) · [#205](https://github.com/114snehasish/homelab/issues/205) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#100](https://github.com/114snehasish/homelab/issues/100) · [#101](https://github.com/114snehasish/homelab/issues/101) · [#102](https://github.com/114snehasish/homelab/issues/102) · [#206](https://github.com/114snehasish/homelab/issues/206) · [#207](https://github.com/114snehasish/homelab/issues/207) · [#103](https://github.com/114snehasish/homelab/issues/103) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [ADR-0013](0013-caddy-edge-dns01-provider-and-credential-model.md) · [#20](https://github.com/114snehasish/homelab/issues/20) (E07) · [#164](https://github.com/114snehasish/homelab/issues/164) · [#165](https://github.com/114snehasish/homelab/issues/165) · [#54](https://github.com/114snehasish/homelab/issues/54) (E06) · [#124](https://github.com/114snehasish/homelab/issues/124)
@@ -390,7 +390,7 @@ listing it is that each line is something a future change could accidentally dep
 | **SSH host keys** | Regenerated on every fresh OS disk. Combined with the new address above, `known_hosts` breaks on **both** axes every cycle — `ssh-keygen -R` for the old host and address belongs in the resume runbook (`#102`), not in the reader's muscle memory. |
 | **Tailscale machine state** | Every resume registers a **brand-new tailnet node**. Park weekly and within two months the tailnet is a graveyard of dead machines with MagicDNS names drifting `homelab-edge-1`, `-2`, … — silently breaking anything that addresses the node by name. Caused here, **owned by E06** ([#54](https://github.com/114snehasish/homelab/issues/54)); the mitigation is named so E06 inherits it rather than rediscovering it: **ephemeral auth keys** (the node is reaped automatically on disconnect) plus a **pinned `--hostname`**. |
 | **OS disk and everything on it** | Installed packages, the Docker and containerd binaries, journald history. Anything that must survive lives on `/data` — since `#99` that includes all of Docker's storage (next row). |
-| **Docker containers, images and layers** — *no longer resets, since `#99`* | `data-root` is `/data/docker` and containerd's root is `/data/containerd`, both behind the data-guard. **Both** roots, because Docker Engine 29+ keeps image content and container snapshots under containerd's root, which `data-root` does not move: moving `data-root` alone would persist containers without the snapshots they point at, and none would restart after a recreate. Two consequences. **Park must leave containers running** — `restart: unless-stopped` does not bring back a container that was explicitly stopped, so a `docker compose stop` or `down` before park means it stays down after resume ([#101](https://github.com/114snehasish/homelab/issues/101)). And **a bind-mount source outside `/data` does not survive** — Caddy's `./Caddyfile` lives under `/home/azureuser/apps` on the OS disk, so until [#40](https://github.com/114snehasish/homelab/issues/40) / [#101](https://github.com/114snehasish/homelab/issues/101) move the apps layer, a resume still redeploys apps before they serve. |
+| **Docker containers, images and layers** — *no longer resets, since `#99`* | `data-root` is `/data/docker` and containerd's root is `/data/containerd`, both behind the data-guard. **Both** roots, because Docker Engine 29+ keeps image content and container snapshots under containerd's root, which `data-root` does not move: moving `data-root` alone would persist containers without the snapshots they point at, and none would restart after a recreate. Two consequences. **Park must leave containers running** — `restart: unless-stopped` does not bring back a container that was explicitly stopped, so a `docker compose stop` or `down` before park means it stays down after resume ([#101](https://github.com/114snehasish/homelab/issues/101)). And **a bind-mount source outside `/data` does not survive** — which is why [#101](https://github.com/114snehasish/homelab/issues/101) moved the apps layer to `/data/apps/<app>`, after Caddy's `./Caddyfile` under `/home/azureuser/apps` came back as a root-owned directory on the 2026-10-06 resume. Park stops containers only through a graceful OS shutdown, never `docker compose stop`/`down` (§5's 2026-10-13 amendment). |
 | **k3s cluster state** | Deliberately not persisted: Argo CD re-bootstraps the cluster from git (E09). The PVs under `/data/k8s-pv` are T1 and do survive. |
 | **The NSG's SSH allow rule** | Already drifts today — it whitelists the public IP of whatever machine last ran plan/apply. Dies with E06. |
 | **NAT Gateway**, once it exists | [#164](https://github.com/114snehasish/homelab/issues/164) owns its teardown *in park from day one*. See §8 — leaving it up voids the entire parked-cost budget. |
@@ -433,6 +433,82 @@ the same region.** Three replicas in one datacenter is not a disaster-recovery s
 ([#20](https://github.com/114snehasish/homelab/issues/20)) is the crash-consistent disaster layer and
 is also regional; nothing in this lab currently survives losing `southindia`. That is an accepted
 residual risk for a homelab, recorded so it is a decision rather than an assumption.
+
+#### Amendment (2026-10-13, #101) — park and resume as workflows
+
+**`#101` builds this section as four dispatchable workflows over two call-only cores, and settles
+six things the section left open or got subtly wrong.** The decisions were taken one by one against
+the 2026-09-08 architecture review's findings on `#101` (B3, D7, D8, D9), re-checked against the code
+as it stood after `#99` and `#100`.
+
+```
+park.yml ────┐                          resume.yml ─┐
+             ├─▶ _park.yml ─▶ _terraform.yml        ├─▶ _resume.yml ─▶ deploy-compute.yml ─▶ _terraform.yml
+destroy.yml ─┘   (+ infra/cloudflare leg)          deploy.yml ─┘   (network → dns → cloudflare → storage → _resume)
+```
+
+1. **The park sequence is backup → graceful stop → deallocate → destroy.** The section said "final
+   restic run, then destroy". Two facts made the middle step mandatory. azurerm 5.8.0 deletes a VM
+   without powering it off first (verified in the provider's delete path), and Terraform destroys
+   `azurerm_virtual_machine_data_disk_attachment` *before* the VM — so a bare destroy **hot-detaches
+   `/data` from a running node**, leaving T1 crash-consistent at best. `az vm stop` requests a
+   graceful guest shutdown by default: Docker stops every container, systemd unmounts `/data` cleanly,
+   and only then does anything detach. `az vm deallocate` follows, so a destroy that is delayed or
+   cancelled leaves a node that bills almost nothing. The backup runs **first, with apps up**, because
+   the pre-hooks need running apps (`pg_dump`) and because it is then the same code path the nightly
+   exercises every day.
+2. **§4's "park must leave containers running" is precise now: park must never *user-stop* a
+   container.** The review suggested `docker compose down` before the backup; that is exactly the trap
+   §4 records, since `restart: unless-stopped` never restarts a container a user stopped. A graceful OS
+   stop is not that: moby sets a container's manually-stopped flag only when the daemon is *not* shutting
+   down (`daemon/kill.go`), so containers stopped by the shutdown come back by themselves when Docker
+   starts on the resumed node. Resume checks it, and also checks that `e2fsck` found a clean filesystem
+   rather than replaying a journal.
+3. **The apps layer moved to `/data/apps/<app>`.** §4's Docker row already predicted it: bind sources
+   on the OS disk did not survive, and on 2026-10-06 Docker recreated Caddy's missing `Caddyfile` as a
+   root-owned directory and the container restart-looped. With compose files, `Caddyfile` and `.env` on
+   the pet disk, a resume needs **no app redeploy step** — the boot contract `#99` already built
+   restarts everything. No boot-time `compose up` unit was added; a restored disk (`#206`) has no
+   Docker state (restic excludes it) and is where such a unit would earn its place.
+4. **Park scope stays `compute/vm` only; `destroy.yml` = park + the Cloudflare delegation.** The two
+   paths share `_park.yml`, so `destroy.yml` — which before `#101` destroyed compute with no backup at
+   all — can no longer bypass the backup. Removing the delegation while the Azure zone survives is safe;
+   the dangerous order (zone gone, delegation still pointing at it) is a takeover risk, and nothing in
+   CI deletes the zone.
+5. **"No backup, no park" has exactly one deliberate bypass.** `park.yml`'s `skip_backup`, honoured
+   only when `skip_backup_confirm` is `park-without-backup`, still stops and destroys through the same
+   pipeline, and its summary says plainly that no final snapshot exists and how to read the repository
+   from a laptop (CI holds no rights on the `restic` container and is not given any). `destroy.yml`
+   cannot skip the backup. A half-finished park — backed up and deallocated, destroy failed — is
+   finished with *Re-run failed jobs*, which does not repeat the backup.
+6. **Park is fleet-wide.** `compute/vm` builds every `fleet.tfvars` entry, so park backs up, stops and
+   destroys every node; per-node park is `#167`. Restic ships only to the public-edge node — a scoping
+   choice in `#100`, not a principle of this ADR — so a node without the backup contract **fails its
+   backup and aborts the park** rather than being destroyed unbacked. Making restic fleet-wide (one
+   shared repository, snapshots per host, staggered prunes, R22 widening to every node) is `#166`'s.
+
+**Concurrency.** The four dispatchers hold `concurrency: {group: homelab-terraform, queue: max}`; the
+cores declare no top-level group, because a called workflow sharing its caller's group is reported to
+be cancelled as a deadlock and GitHub does not document called-workflow concurrency. Terraform still
+runs only through `_terraform.yml`, so the per-state-blob `tf-` job group keeps protecting the state —
+the lifecycle group *supplements* it (review finding 4).
+
+**CI reaches nodes through Azure managed Run Command.** Park's backup and resume's checks need to run
+something on a node, and in 2026-10 nothing else could: the NSG admits SSH from one whitelisted IP, CI
+holds no SSH key, and Tailscale (E06) is unbuilt. Run Command is authorised by Azure RBAC alone (the
+CI identity's Contributor on `homelab-rg`), needs no key and no NSG change, and its scripts
+(`scripts/lifecycle/`) are shipped per run, so they cost nothing against the `custom_data` budget. It
+is delivered as a VM extension, so `compute/vm` sets `allow_extension_operations = true`. **That is a
+posture change, recorded as roadmap R23**: the CI identity can now run root commands inside a running
+node. It is not new *reach* — Contributor on `homelab-rg`, `disks/write` in the persist RG and
+Managed Identity Operator over both identities already let CI build a VM that holds the pet disk and
+both identities — but it removes the friction and the visible VM churn of doing so.
+
+**Not done, and recorded:** Telegram notifications on completion — deferred to E08 (`#65`), the same
+call `#100` made; GitHub's own failed-run notification and the job summaries cover a human-dispatched
+workflow. The subscription-wide "only the parked set remains" check — CI deliberately cannot list the
+subscription, so `_park.yml` asserts what it can see (no VM, NIC, public IP, OS disk or A record left
+in `homelab-rg`; data disks `Unattached`) and `#102`'s drill records the full check.
 
 ### 6. Tier 2 mechanics
 
@@ -677,4 +753,7 @@ exists, it supersedes this table and this ADR is edited to match.
 - [x] Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a) — done; `.env.example` now carries it as a required value rather than a commented-out fallback.
 - [ ] Replace §8's computed table with the figure measured in [#102](https://github.com/114snehasish/homelab/issues/102), or correct the design if reality disagrees.
 - [ ] R22 strong form: custom no-delete data role for the VM + `forget --prune` in a scheduled CI job with its own identity ([#100](https://github.com/114snehasish/homelab/issues/100), §6c). Still open — `#100` shipped the versioning/soft-delete half only.
+- [ ] Restic on every fleet node, not just the public edge — one shared repository with per-host snapshots, staggered `forget --prune` (the exclusive lock collides), and R22 widening to every node. Owned by [#166](https://github.com/114snehasish/homelab/issues/166); until then park aborts on a node without the backup contract (§5, 2026-10-13 amendment).
+- [ ] Park and resume completion notifications, deferred to E08 ([#65](https://github.com/114snehasish/homelab/issues/65)) with the timers' alerting below. The subscription-wide parked-set check is [#102](https://github.com/114snehasish/homelab/issues/102)'s.
+- [ ] `_terraform.yml`'s job-level `tf-` concurrency group keeps GitHub's default `queue: single`, so a *pending* park destroy can be cancelled by a newer queued plan. Park deallocates first, so that state is cheap, and Re-run failed jobs completes it. Revisit if it ever happens in practice.
 - [ ] Failure alerting for the backup and check timers. `#100`'s scope item 4 specified a Telegram curl and it was **deferred whole to E08** ([#65](https://github.com/114snehasish/homelab/issues/65)) rather than built as a one-off — a failed run currently surfaces as a failed systemd unit in journald and pages nobody. Recorded so the gap is a decision rather than an oversight. Note [#207](https://github.com/114snehasish/homelab/issues/207)'s scope item 4 refers to "`#100`'s Telegram-curl pattern", which does not exist.

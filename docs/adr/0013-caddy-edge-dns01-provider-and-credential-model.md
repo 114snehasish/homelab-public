@@ -47,7 +47,7 @@ this repo's own history shows tends to outlive its stated lifetime. The managed-
 more up front and removes the debt instead of scheduling it: no credential of any kind lives on the
 VM, and there is nothing for E05.3/E05.4 to migrate for this identity.
 
-**User-assigned, not system-assigned.** `compute/vm` is cattle — `destroy.yml` tears the edge node
+**User-assigned, not system-assigned.** `compute/vm` is cattle — `park.yml` tears the edge node
 down on every park cycle. A system-assigned identity dies with the VM and mints a new
 `principal_id` on every recreate, which would break the DNS Zone Contributor role assignment each
 time. A user-assigned identity, created once in `infra/identity` and attached by name, survives
