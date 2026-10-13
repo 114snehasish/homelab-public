@@ -1,0 +1,148 @@
+name: Resume (reusable)
+
+# The one implementation of "bring compute up and prove it is whole" (#101,
+# ADR-0009 §5). Call-only, like _terraform.yml and _park.yml. Two callers:
+#
+#   resume.yml  the mirror of park.yml: compute only.
+#   deploy.yml  its compute leg, so every applying full deploy (including the
+#               one after a destroy.yml) ends with the same health check.
+#
+# DELIBERATELY NO TOP-LEVEL `concurrency:`: both callers hold `homelab-terraform`,
+# and the Terraform job inherits _terraform.yml's job-level tf- group through
+# deploy-compute.yml. Same reasoning as _park.yml.
+#
+# The resume contract it checks, per node (scripts/lifecycle/node-health.sh, via
+# Run Command): cloud-init done -> homelab-persist.target active (guard passed) ->
+# /data was cleanly unmounted at park -> Docker up -> every restart-policy
+# container running and staying up -> Caddy loaded its certificate rather than
+# ordering one. Then, from the runner, the edge answers HTTPS with the wildcard
+# certificate and nothing more specific (R6).
+#
+# Apps need no redeploy step here, by design: Docker's storage is on /data (#99)
+# and since #101 so are the compose files, Caddyfile and .env (/data/apps), so
+# Docker restarts every `unless-stopped` container with its bind sources intact.
+
+on:
+  workflow_call:
+    inputs:
+      apply:
+        description: 'Apply compute/vm and verify. False = plan only.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  RG: homelab-rg
+
+jobs:
+  start:
+    name: Start clock
+    runs-on: ubuntu-latest
+    outputs:
+      epoch: ${{ steps.clock.outputs.epoch }}
+    steps:
+      - id: clock
+        run: echo "epoch=$(date +%s)" >>"$GITHUB_OUTPUT"
+
+  # deploy-compute.yml stays the single home of compute's state_key and var_file.
+  terraform:
+    name: Compute
+    needs: start
+    uses: ./.github/workflows/deploy-compute.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply == true }}
+
+  verify:
+    name: Verify nodes + edge
+    needs: [start, terraform]
+    if: inputs.apply == true && needs.terraform.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: Node health (Run Command)
+        id: nodes
+        run: |
+          set -uo pipefail
+          s="$GITHUB_STEP_SUMMARY"
+          fail=0
+          echo "### Node health" >>"$s"
+          for node in $(az vm list -g "$RG" --query '[].name' -o tsv); do
+            out="$(scripts/lifecycle/run-on-node.sh "$node" scripts/lifecycle/node-health.sh 1800 node-health)" || fail=1
+            printf '%s\n' "$out"
+            { echo "**${node}**"; echo '```'; printf '%s\n' "$out"; echo '```'; } >>"$s"
+          done
+          exit "$fail"
+
+      # From the runner, because it must see what a client sees. --resolve pins
+      # the new IP, so this passes even while the NS delegation is absent (after a
+      # destroy.yml); the delegation gets its own check below.
+      - name: Edge HTTPS + certificate
+        if: ${{ !cancelled() }}
+        env:
+          ZONE: ${{ secrets.DNS_ZONE_NAME }}
+        run: |
+          set -uo pipefail
+          s="$GITHUB_STEP_SUMMARY"
+          target="$(az network dns record-set a show -g "$RG" -z "$ZONE" -n '*' --query targetResource.id -o tsv 2>/dev/null || true)"
+          if [ -z "$target" ]; then
+            echo "- No wildcard record: no public_edge node in the fleet, so no edge to check." >>"$s"
+            exit 0
+          fi
+          ip="$(az network public-ip show --ids "$target" --query ipAddress -o tsv)"
+          host="test.${ZONE}"
+          body=""
+          for _ in $(seq 1 30); do
+            body="$(curl -fsS --max-time 10 --resolve "${host}:443:${ip}" "https://${host}/" 2>/dev/null || true)"
+            [ "$body" = "caddy edge ok" ] && break
+            sleep 10
+          done
+          san="$(openssl s_client -connect "${ip}:443" -servername "$host" </dev/null 2>/dev/null \
+            | openssl x509 -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ')"
+          fail=0
+          echo "### Edge" >>"$s"
+          if [ "$body" = "caddy edge ok" ]; then
+            echo "- HTTPS: 200 \`caddy edge ok\`, certificate chain verified" >>"$s"
+          else
+            echo "- HTTPS: **FAILED** after 5 min — \`docker logs caddy\` on the edge node" >>"$s"; fail=1
+          fi
+          # R6: exactly the wildcard. Anything more specific leaked a hostname
+          # into a public CT log.
+          if [ "$san" = "DNS:*.${ZONE}" ]; then
+            echo "- Certificate SAN: wildcard only" >>"$s"
+          else
+            echo "- Certificate SAN: **unexpected** — check the Caddyfile for a second site block" >>"$s"; fail=1
+          fi
+          if [ -z "$(dig +short NS "$ZONE" @1.1.1.1)" ]; then
+            echo "- **NS delegation absent** — the lab was destroyed, not parked. Run deploy.yml (or deploy-cloudflare.yml) to restore public DNS." >>"$s"
+            echo "::warning::NS delegation for the zone is absent; public DNS will not resolve until infra/cloudflare is applied."
+          else
+            echo "- NS delegation: present" >>"$s"
+          fi
+          exit "$fail"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        env:
+          START: ${{ needs.start.outputs.epoch }}
+        run: |
+          d=$(( $(date +%s) - START ))
+          {
+            echo
+            printf -- '- Resume duration: **%dm %02ds** (workflow start → verified)\n' $((d / 60)) $((d % 60))
+            echo "- New public IP and new SSH host keys (ADR-0009 §4): on your laptop, \`ssh-keygen -R <old-ip>\` and \`ssh-keygen -R <node>.<zone>\` before connecting."
+          } >>"$GITHUB_STEP_SUMMARY"

@@ -71,7 +71,7 @@ resource "azurerm_dns_a_record" "vm_record" {
 #
 #   1. An alias record needs the public IP's *resource ID*. This module holds it
 #      directly; infra/dns would need a data source lookup by name.
-#   2. destroy.yml tears this module down routinely (cattle VM, pet disk). That
+#   2. park.yml tears this module down routinely (cattle VM, pet disk). That
 #      lookup would then fail on every infra/dns plan between deploy cycles —
 #      exactly the #124 failure mode.
 #   3. Module order runs dns (#2) before compute (#5). A compute-dependent record
@@ -149,6 +149,7 @@ resource "azurerm_network_interface" "vm_nic" {
 # argument for a new tier, not for reinstating NIC-level rules.
 
 resource "azurerm_linux_virtual_machine" "homelab_vm" {
+  # checkov:skip=CKV_AZURE_50:Extension operations are on because Azure Run Command (itself a VM extension) is the CI-to-VM channel park/resume use (#101, ADR-0009); no extension is installed by this module
   for_each            = var.instances
   name                = each.key
   location            = data.azurerm_resource_group.rg.location
@@ -165,11 +166,23 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
   }
 
   disable_password_authentication = true
-  allow_extension_operations      = false
+
+  # On since #101: park and resume reach a node through Azure managed Run Command
+  # (scripts/lifecycle/), which Azure delivers as a VM extension. It replaced
+  # SSH for CI on purpose: the NSG admits one whitelisted IP, there was no CI key,
+  # and Tailscale (E06) is not built. Changing it updates the VM in place.
+  #
+  # The posture change, stated rather than discovered (roadmap R23): the CI
+  # identity can now run commands as root inside a running node. That is no new
+  # *reach* — Contributor on homelab-rg, disks/write in the persist RG and
+  # Managed Identity Operator over both identities already let CI build a VM
+  # holding the pet disk and both identities — but it removes the friction of
+  # doing so. This module itself installs no extension.
+  allow_extension_operations = true
 
   # User-assigned only on the edge node (0-or-1 set, same as the wildcard
-  # record) — private-tier nodes have no DNS-01 identity to attach. Does NOT
-  # need allow_extension_operations = true: the IMDS token endpoint and VM
+  # record) — private-tier nodes have no DNS-01 identity to attach. Does not
+  # depend on allow_extension_operations above: the IMDS token endpoint and VM
   # extensions are separate mechanisms, verified live against this VM before
   # writing this block (a container on the `web` bridge network reached
   # http://169.254.169.254/metadata/instance with no extension involved).

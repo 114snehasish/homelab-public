@@ -18,9 +18,14 @@ services:
     networks:
       - web
 
-# External: created once per apps/README.md ("docker network create web"),
-# not owned by any single app's compose file. Every app that Caddy proxies to
-# joins this same network so Caddy can reach it by container name.
+# External: created once per disk per apps/README.md ("docker network create
+# web"), not owned by any single app's compose file. Every app that Caddy proxies
+# to joins this same network so Caddy can reach it by container name. It lives in
+# Docker's storage on /data (#99), so it survives park/resume.
+#
+# This file is deployed to /data/apps/caddy (#101), so ./Caddyfile and .env —
+# the bind sources — sit on the pet disk and survive a resume too. Docker then
+# restarts this container by itself; nothing redeploys it.
 networks:
   web:
     external: true

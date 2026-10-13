@@ -1,35 +1,41 @@
 name: Destroy Homelab Infrastructure
 
-# Tears down billable compute in reverse dependency order:
-# compute/vm -> infra/cloudflare.
-# infra/storage is never touched (persistent data disk, prevent_destroy).
-# infra/network is never touched. The reason changed at E15.2 (#98), as
-# ADR-0009 section 5 predicted: the disk moved to homelab-persist-rg, so
-# "the RG cannot be destroyed while the disk exists" is no longer why. What
-# remains is that VNet/subnet/NSG/RG cost nothing to leave up, and the DNS
-# zone in homelab-rg is read by name via data sources in infra/cloudflare
-# and compute/vm with no tolerance for absence (#124).
-# infra/dns is never touched either: the zone is a flat ~$0.52/month
-# regardless of usage, not worth tearing down every cycle, and destroying it
-# breaks infra/cloudflare's and compute/vm's data-source lookups by name
-# between deploy cycles (#124).
+# Destroy = PARK, then remove the Cloudflare NS delegation for the Azure zone
+# (#101). The park half is _park.yml — the same implementation park.yml runs —
+# so this workflow can never destroy compute without a verified final backup,
+# and it deliberately exposes no skip_backup: the bypass exists in park.yml only.
+# For a wedged node, run park.yml with skip_backup first; this workflow's park
+# leg then finds no VMs, does nothing, and the cloudflare leg proceeds.
 #
-# Both jobs are thin callers of _terraform.yml, same as the deploy-*.yml
-# workflows (#153) — they inherit the .terraform-version pin, `validate`, the
-# OIDC auth step and the per-module `tf-<dir>` concurrency group from there.
-# The only difference from a deploy caller is `destroy: true`, which flips the
-# plan to `-destroy`; the apply gate is the same one.
+# Before #101 this file destroyed compute/vm directly with no backup — a second,
+# divergent destroy path (the #118 comment, review finding 3). Now there is one.
 #
-# workflow_dispatch runs inherit the ref they were dispatched from, and the
-# only federated credentials are `:ref:refs/heads/main` and `:pull_request`
-# (E02.3, #35) — so dispatch this from main. From a branch it fails at Azure
-# auth, by design.
+# Order matters: the cloudflare leg `needs: park`, so the delegation is removed
+# only after the backup is verified and compute is gone. Removing the delegation
+# while the Azure zone survives is safe; the dangerous order — zone gone,
+# delegation still pointing at it — is a subdomain-takeover risk, and nothing in
+# CI deletes the zone.
+#
+# Still never touched, unchanged reasons:
+# - infra/storage: the pet disks (prevent_destroy; CI cannot delete disks at all).
+# - infra/network: VNet/subnet/NSG/RG cost nothing to leave up, and the DNS zone
+#   in homelab-rg is read by name via data sources with no tolerance for
+#   absence (#124). ADR-0009 §5 records the reason changing at E15.2 (#98).
+# - infra/dns: the zone is a flat ~$0.52/month, and destroying it breaks those
+#   same lookups between cycles (#124).
+# - infra/identity and infra/backup: local Owner applies with no workflow.
+#
+# To come back from a destroy, run deploy.yml: it re-applies infra/cloudflare and
+# its compute leg is _resume.yml, so it ends with the same health check.
+#
+# apply_destroy unchecked = dry run: _park.yml only reads and plans, and the
+# cloudflare leg plans -destroy. Dispatch from main (OIDC subject).
 
 on:
   workflow_dispatch:
     inputs:
       apply_destroy:
-        description: 'IMPORTANT: Whether to actually destroy the resources. Uncheck for a dry run (plan -destroy only).'
+        description: 'IMPORTANT: Whether to actually park and destroy. Uncheck for a dry run (plan -destroy only).'
         required: true
         type: boolean
         default: false
@@ -37,45 +43,28 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  # _terraform.yml declares id-token: write for its OIDC path; a caller
-  # granting less than the workflow it calls fails the run at startup.
+  # _park.yml and _terraform.yml declare id-token: write; a caller granting less
+  # than the workflow it calls fails the run at startup.
   id-token: write
 
 concurrency:
-  # Workflow-level, so a destroy and a deploy can never interleave. Each called
-  # job additionally takes _terraform.yml's `tf-<working_directory>` group,
-  # which is what actually leases the module's state blob.
+  # Shared with park.yml, resume.yml and deploy.yml. _park.yml declares no group
+  # of its own (it would collide with this one); its Terraform job still takes
+  # _terraform.yml's per-state-blob tf- group.
   group: homelab-terraform
+  queue: max
 
 jobs:
-  destroy-compute:
-    name: Destroy Compute
-    uses: ./.github/workflows/_terraform.yml
+  park:
+    name: Park
+    uses: ./.github/workflows/_park.yml
     secrets: inherit
     with:
-      working_directory: compute/vm
-      # Must match the state_key deploy-compute.yml passes for the same
-      # instance (E17.4, #163): compute/vm is partial-backend now, so this is
-      # what selects the state blob — and it is also the concurrency group, so
-      # a mismatch would let a destroy and a deploy of one node run at once.
-      #
-      # Deliberately a single leg while the fleet is one node. When a second
-      # instance lands (#166) this job needs a matrix mirroring
-      # deploy-compute.yml's, and destroy-cloudflare's `needs:` then means
-      # "needs *all* legs" — which is the default and the ordering this
-      # workflow's header describes.
-      state_key: homelab.compute.tfstate
-      # Required even to plan a destroy: `instances` has no default, so without
-      # this the destroy plan fails on a missing variable rather than tearing
-      # down the fleet. It tears down every node in the map — which is what
-      # this workflow already assumed when the fleet was one node.
-      var_file: ../../fleet.tfvars
-      destroy: true
       apply: ${{ inputs.apply_destroy == true }}
 
   destroy-cloudflare:
     name: Destroy Cloudflare
-    needs: destroy-compute
+    needs: park
     uses: ./.github/workflows/_terraform.yml
     secrets: inherit
     with:

@@ -21,7 +21,12 @@ permissions:
   pull-requests: write
 
 concurrency:
+  # Shared with park.yml, resume.yml and destroy.yml (#101), so no two lifecycle
+  # runs interleave. queue: max because the default keeps one pending run and
+  # silently cancels it when another is dispatched. The called workflows declare
+  # no top-level group of their own — one would collide with this one.
   group: homelab-terraform
+  queue: max
 
 jobs:
   network:
@@ -56,10 +61,15 @@ jobs:
     with:
       apply: ${{ inputs.apply_terraform }}
 
+  # _resume.yml, not deploy-compute.yml directly (#101): it applies compute
+  # through deploy-compute.yml and then runs the resume health check, so a full
+  # deploy — including the one that follows a destroy.yml — is not done until
+  # the nodes, their containers and the edge are verified. destroy.yml mirrors
+  # this on the way down by calling _park.yml.
   compute:
     name: Compute
     needs: storage
-    uses: ./.github/workflows/deploy-compute.yml
+    uses: ./.github/workflows/_resume.yml
     secrets: inherit
     with:
       apply: ${{ inputs.apply_terraform }}
