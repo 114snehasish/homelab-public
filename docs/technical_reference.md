@@ -101,7 +101,7 @@ it (#162), so the key `homelab-edge` reproduces the deployed node's names byte-f
   flagged `public_edge = true` in `fleet.tfvars` (at most one, enforced by a `validation` block
   on `var.instances`). It lives in this module rather than `infra/dns` because an alias record
   needs the public IP's *resource ID*, and a data-source lookup in `infra/dns` would fail on
-  every plan while `destroy.yml` has this module torn down — the #124 failure mode. Alias, not
+  every plan while the lab is parked (`park.yml` tears this module down) — the #124 failure mode. Alias, not
   a literal IP, so a VM recreate re-points `*` in Azure with no Terraform run. One wildcard is
   also what keeps per-app hostnames out of a publicly mirrored zone (risk R6).
 - `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
@@ -148,7 +148,7 @@ lie, and a bare `init` would silently target instance zero.
 
 ### Adding a second instance
 **One entry in `fleet.tfvars`.** That is the whole authoring surface: no workflow edit, no new
-state key, no new concurrency group, no `destroy.yml` leg. `infra/storage` reads the same map and
+state key, no new concurrency group, no `park.yml` or `destroy.yml` leg (park and resume loop over the live fleet). `infra/storage` reads the same map and
 creates that node's data disk, so the "a managed disk cannot attach to two VMs" constraint is
 handled by the disks multiplying in lockstep.
 
@@ -302,7 +302,7 @@ Verified against the live subscription after applying: `az role assignment list 
 <edge principal_id> --all` returns exactly the one `DNS Zone Contributor` row.
 
 Because a role assignment lives on the scope it grants, CI can manage `homelab-rg` but could
-never recreate it after a deletion. That is why `destroy.yml` stops short of `infra/network`,
+never recreate it after a deletion. That is why `destroy.yml` (and `park.yml`) stop short of `infra/network`,
 and why the break-glass local apply matters (roadmap risk **R8**).
 
 The blob grant only works when Terraform authenticates to storage with Entra rather than
@@ -329,7 +329,7 @@ VM is ever ambiguous (it is not, today — the VM carries exactly one user-assig
 
 ### Current state
 Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
-`destroy.yml` authenticates as it, with no client-secret fallback anywhere in the pipeline.
+`destroy.yml`, `park.yml` and `resume.yml` authenticate as it, with no client-secret fallback anywhere in the pipeline.
 E02.4 (#36) made that permanent — the leftover `ARM_*`/`AZURE_*` secrets are deleted from repo
 settings and the old service principal's client secret is rotated out and removed in Entra, so
 this UAMI is not merely the primary path to Azure from CI, it is the only one. Losing or
@@ -396,7 +396,9 @@ Drift is caught **on demand, not continuously** — no workflow plans this modul
 
 **Purpose**: Compose-as-code apps, deployed to the VM manually today (CI deploy is E03.4, #40).
 Unlike the five modules above, this layer has no Terraform and no state — it is files on the VM's
-`/data` disk plus whatever `docker compose` is currently running. The full pattern and the manual
+`/data` disk plus whatever `docker compose` is currently running. Since #101 the deployed app
+directories themselves live at `/data/apps/<app>`, so their bind sources survive a park/resume along
+with Docker's storage and a resume needs no redeploy. The full pattern and the manual
 deploy runbook live in [`apps/README.md`](../apps/README.md); this section is the reference
 summary.
 
@@ -451,8 +453,8 @@ are thin wrappers: their `jobs:` block only declares triggers/inputs, then
 delegates the actual init → validate → plan → dispatch-gated apply sequence
 to **`_terraform.yml`**, a `workflow_call`-only reusable workflow
 parameterized by `working_directory` (module path), `apply`, an
-optional `ssh_source_ip` (network only), `destroy` (`destroy.yml`
-only — see below), and — since E17.4
+optional `ssh_source_ip` (network only), `destroy` (`_park.yml` and
+`destroy.yml` only — see below), and — since E17.4
 ([#163](https://github.com/114snehasish/homelab/issues/163)) —
 `state_key` and `var_file`. `_terraform.yml` pins the
 Terraform CLI version from the repo-root `.terraform-version` file and
@@ -484,12 +486,12 @@ which is the shape #159 had decided on from the start.
 
 `var_file` is what carries that file in: `deploy-compute.yml` passes
 `../../fleet.tfvars` and so does `deploy-storage.yml` — paths are relative to
-`working_directory`, and both modules sit two levels deep — and `destroy.yml`'s
-compute leg passes it too
+`working_directory`, and both modules sit two levels deep — and `_park.yml`'s
+destroy job passes it too
 — without it `plan -destroy` fails on the missing `instances` variable before it
 can tear anything down. Both modules declare that variable with **no default**,
 so losing the flag is a loud failure rather than a plan that quietly destroys
-every node. `destroy.yml` also passes the same `state_key` as the deploy leg, or
+every node. `_park.yml` also passes the same `state_key` as the deploy leg, or
 a destroy and a deploy of one node could run at once.
 
 All five also list `.github/workflows/_terraform.yml` in their `push` and
@@ -562,10 +564,24 @@ drift, until #54 (E06.4) removes the ipify data source.
 
 ### Overall pipelines
 
-- **`deploy.yml`** (manual dispatch): calls the five per-module workflows in dependency order — network → dns → cloudflare → storage → compute — with `secrets: inherit`. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.
-- **`destroy.yml`** (manual dispatch): tears down billable resources in reverse order — compute → cloudflare. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**. The reason for sparing network changed at E15.2 ([#98](https://github.com/114snehasish/homelab/issues/98)), exactly as ADR-0009 §5 anticipated — the disk moved to `homelab-persist-rg`, so "the network module cannot be destroyed while the disk exists" no longer applies; what remains is that the VNet/subnet/NSG/RG are free to leave up, and that the DNS zone in `homelab-rg` is read by name via data sources with no tolerance for absence; the DNS zone costs a flat ~$0.52/month regardless of usage, so there's no reason to tear it down every cycle — and doing so previously broke `infra/cloudflare`'s and `compute/vm`'s data-source lookups by name between deploy cycles (#124). The `apply_destroy` checkbox (default unchecked) gates the actual destroy; unchecked runs `plan -destroy` dry runs only. Since #153 both of its jobs are thin `uses:` callers of `_terraform.yml`, identical in shape to a `deploy-*.yml` job except for `destroy: true` — so destroy runs at the `.terraform-version` pin, runs `terraform validate`, and shares the deploy path's single OIDC auth step and apply gate rather than duplicating them.
+Four dispatchable workflows over two call-only cores (E15.5, [#101](https://github.com/114snehasish/homelab/issues/101); [ADR-0009](adr/0009-tiered-persistence-park-resume.md) §5, 2026-10-13 amendment):
 
-Both overall pipelines share the `homelab-terraform` concurrency group so a deploy and a destroy can never run at the same time. That group is workflow-level; each `_terraform.yml` job additionally takes the per-module `tf-<working_directory>` group, which is what actually leases the module's state blob — destroy included, as of #153.
+```
+park.yml ────┐                          resume.yml ─┐
+             ├─▶ _park.yml ─▶ _terraform.yml        ├─▶ _resume.yml ─▶ deploy-compute.yml ─▶ _terraform.yml
+destroy.yml ─┘   (+ infra/cloudflare leg)          deploy.yml ─┘   (network → dns → cloudflare → storage → _resume)
+```
+
+- **`_park.yml`** (call-only): `preflight` (reads the live fleet with `az vm list`; refuses a stopped node unless `skip_backup`) → `backup` (`scripts/lifecycle/park-backup.sh` on every node via Azure managed Run Command: `restic-backup final`, then the snapshot read back from the repository) → `quiesce` (`az vm stop`, graceful, then `az vm deallocate`) → `destroy` (`compute/vm` through `_terraform.yml`, `destroy: true`) → `verify` (no VM/NIC/public IP/OS disk/A record left in `homelab-rg`, data disks `Unattached`, job summary). `quiesce` runs only if `backup` **succeeded** (or was deliberately bypassed) and `destroy` only if `quiesce` succeeded, so a failed backup stops everything before a single resource changes. Dry run = `preflight` + `plan -destroy`, nothing else.
+- **`_resume.yml`** (call-only): applies `compute/vm` through `deploy-compute.yml`, then `verify`: per node, `scripts/lifecycle/node-health.sh` via Run Command (cloud-init done, `homelab-persist.target` active, `/data` cleanly unmounted at park, Docker up, every restart-policy container running and stable, no ACME order since boot); then, from the runner, `https://test.<zone>` via `curl --resolve` must return `caddy edge ok` with the wildcard as the certificate's only SAN, and a missing NS delegation is warned about. The summary records the resume duration.
+- **`park.yml`** (manual dispatch): `_park.yml` alone — compute only, the delegation stays. The only workflow with `skip_backup`, honoured only with the confirmation `park-without-backup`.
+- **`resume.yml`** (manual dispatch): `_resume.yml` alone — the mirror of `park.yml`.
+- **`deploy.yml`** (manual dispatch): network → dns → cloudflare → storage → compute, with `secrets: inherit`; the compute leg is `_resume.yml`, so an applying full deploy ends with the resume health check. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.
+- **`destroy.yml`** (manual dispatch): `_park.yml`, then `infra/cloudflare` destroyed (`needs: park`). It therefore cannot destroy compute without a verified backup, and has no bypass of its own. It deliberately **skips storage** (the persistent data disk), **network**, and **dns**. The reason for sparing network changed at E15.2 ([#98](https://github.com/114snehasish/homelab/issues/98)), exactly as ADR-0009 §5 anticipated — the disk moved to `homelab-persist-rg`; what remains is that the VNet/subnet/NSG/RG are free to leave up, and that the DNS zone in `homelab-rg` is read by name via data sources with no tolerance for absence (#124). Removing the delegation while the zone survives is safe; the reverse order would be a takeover risk, and nothing in CI deletes the zone. The `apply_destroy` checkbox (default unchecked) gates it.
+
+**CI reaches nodes through Azure managed Run Command, not SSH.** `scripts/lifecycle/run-on-node.sh` waits for the VM agent, ships a committed script base64-encoded, reads `executionState`/`exitCode` and the last 4 KB of output from the instance view, and deletes the Run Command resource. It needs `allow_extension_operations = true` on the VM (`compute/vm`, with an in-block `CKV_AZURE_50` skip) and nothing beyond the CI identity's existing Contributor on `homelab-rg`. These scripts are not in `custom_data`. The posture change is roadmap R23.
+
+All four dispatchers share **`concurrency: {group: homelab-terraform, queue: max}`**, so no two lifecycle runs interleave and a later dispatch queues FIFO instead of cancelling a pending one. That group is workflow-level; the cores declare none of their own (a called workflow sharing its caller's group is reported to be cancelled as a deadlock), and each `_terraform.yml` job additionally takes the per-state-blob `tf-` group, which is what actually leases the state — park included.
 
 ### Lint gate
 

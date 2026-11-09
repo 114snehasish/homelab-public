@@ -1,0 +1,58 @@
+name: Park the Lab
+
+# Park = final restic backup -> graceful stop -> deallocate -> destroy compute/vm
+# (#101, ADR-0009 §5). Everything else stays: the data disks, the backups, the
+# DNS zone AND its Cloudflare delegation, the network. Use destroy.yml to also
+# remove the delegation, and resume.yml to come back.
+#
+# A thin dispatcher; the logic lives in _park.yml, which destroy.yml calls too.
+# This is the ONLY workflow exposing skip_backup — the emergency path for a
+# wedged node whose backup cannot run. For that, set skip_backup AND type
+# `park-without-backup` into the confirmation; anything else fails the run
+# before Azure is touched.
+#
+# apply unchecked (the default) is a read-only dry run: it reads the fleet and
+# plans the destroy, and nothing is backed up, stopped or destroyed.
+#
+# Dispatch from main: the OIDC federated credential trusts
+# `:ref:refs/heads/main`, so a branch dispatch fails at Azure auth by design.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Park for real (backup, stop, destroy compute). Unchecked = dry run.'
+        type: boolean
+        default: false
+      skip_backup:
+        description: 'EMERGENCY ONLY: park without a final backup (needs the confirmation below).'
+        type: boolean
+        default: false
+      skip_backup_confirm:
+        description: 'Type park-without-backup to confirm skip_backup.'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  # _park.yml (and _terraform.yml under it) declare these; a caller granting
+  # less fails the run at startup with zero jobs.
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  # Shared with resume.yml, destroy.yml and deploy.yml, so no two lifecycle runs
+  # interleave (review finding 4). queue: max, because the default keeps only one
+  # pending run and silently cancels it when another is dispatched.
+  group: homelab-terraform
+  queue: max
+
+jobs:
+  park:
+    name: Park
+    uses: ./.github/workflows/_park.yml
+    secrets: inherit
+    with:
+      apply: ${{ inputs.apply == true }}
+      skip_backup: ${{ inputs.skip_backup == true }}
+      skip_backup_confirm: ${{ inputs.skip_backup_confirm }}

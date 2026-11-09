@@ -2,7 +2,8 @@
 
 ## The pattern
 
-`apps/` is one directory per app. Each app directory holds:
+`apps/` is one directory per app. On the VM, each one lives at **`/data/apps/<app>`** — on the pet
+disk, never the OS disk (#101; why below). Each app directory holds:
 
 - A `docker-compose.yml` — one service (or a small related group), joined to the shared external
   `web` Docker network.
@@ -40,16 +41,40 @@ write the ACME TXT record somewhere Let's Encrypt never looks. `compute/vm` atta
 only to the instance with `public_edge = true` — the edge node's Terraform plan must show that
 identity attached before Caddy is deployed here, or the container has nothing to authenticate as.
 
-## Step 1 — create the shared network (once per VM)
+## Why `/data/apps`, not the home directory
+
+Since `#99` Docker's storage lives on `/data`, so containers, images and the `web` network survive a
+park/resume and Docker restarts every `restart: unless-stopped` container by itself. Until `#101` the
+one thing that did **not** survive was each app's *bind sources*: `./Caddyfile` and `.env` sat in
+`/home/azureuser/apps` on the OS disk, which every resume replaces. Docker then recreated the missing
+`Caddyfile` as a **root-owned directory** (with root-owned parents), Caddy exited 127, and the next
+`rsync` failed with `Permission denied` — exactly what happened on 2026-10-06.
+
+With the tree on `/data/apps`, a resume needs **no app step at all**: the bind sources come back with
+the disk and Docker restarts the containers, and `resume.yml` checks that it did (ADR-0009 §5). Two
+consequences worth knowing: each app's `.env` is now inside the restic backup set (identifiers only,
+so that is fine), and the tree is the *deployed copy* — git stays the source of truth and a deploy
+updates it.
+
+## Step 0 — the apps directory (once per disk)
+
+```bash
+ssh azureuser@<public_ip> 'sudo install -d -o azureuser -g azureuser -m 0755 /data/apps'
+```
+
+Once per **disk**, not per VM: it lives on `/data`, so it survives every park.
+
+## Step 1 — create the shared network (once per disk)
 
 ```bash
 ssh azureuser@<public_ip> 'docker network create web'
 ```
 
 Idempotent-ish: if it already exists, Docker errors with `network with name web already exists`,
-which is fine — nothing to do. Every app's compose file, including Caddy's, declares `web` as
-`external: true` rather than creating it, so exactly one app doesn't get to own the network's
-lifecycle.
+which is fine — nothing to do. Since `#99` the network lives in Docker's storage on `/data`, so it
+survives a resume; only a fresh or restored disk (#206) needs it again. Every app's compose file,
+including Caddy's, declares `web` as `external: true` rather than creating it, so exactly one app
+doesn't get to own the network's lifecycle.
 
 ## Step 2 — copy `.env` onto the VM (first deploy, or after rotating a value)
 
@@ -64,8 +89,9 @@ cp apps/caddy/.env.example apps/caddy/.env
 # Fill in two values:
 #   AZURE_SUBSCRIPTION_ID  az account show --query id -o tsv
 #   AZURE_CLIENT_ID        terraform -chdir=infra/identity output -raw edge_dns_client_id
-scp apps/caddy/.env azureuser@<public_ip>:/home/azureuser/apps/caddy/.env
-ssh azureuser@<public_ip> 'chmod 600 /home/azureuser/apps/caddy/.env'
+ssh azureuser@<public_ip> 'install -d -m 0755 /data/apps/caddy'
+scp apps/caddy/.env azureuser@<public_ip>:/data/apps/caddy/.env
+ssh azureuser@<public_ip> 'chmod 600 /data/apps/caddy/.env'
 ```
 
 **`AZURE_CLIENT_ID` is required since E15.4 (#100), and leaving it blank fails in the worst possible
@@ -77,15 +103,15 @@ the change that caused it merged. Use the **edge DNS** identity's client id, not
 they are two different identities with two different grants, and the wrong one fails the DNS-01
 challenge with an authorization error rather than a recognisable "wrong identity".
 
-**Assert:** `ssh azureuser@<public_ip> 'stat -c "%a %n" /home/azureuser/apps/caddy/.env'` prints
-`600 /home/azureuser/apps/caddy/.env`. This file holds identifiers, not a secret — but it stays out
+**Assert:** `ssh azureuser@<public_ip> 'stat -c "%a %n" /data/apps/caddy/.env'` prints
+`600 /data/apps/caddy/.env`. This file holds identifiers, not a secret — but it stays out
 of the public mirror on principle, same as every other `.env` in this repo.
 
 ## Step 3 — deploy (this is the repeatable loop)
 
 ```bash
-rsync -av --exclude='.env' apps/caddy/ azureuser@<public_ip>:/home/azureuser/apps/caddy/
-ssh azureuser@<public_ip> 'cd apps/caddy && docker compose up -d --build'
+rsync -av --exclude='.env' apps/caddy/ azureuser@<public_ip>:/data/apps/caddy/
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose up -d --build'
 ```
 
 `--exclude='.env'` is belt-and-suspenders: `.env` is gitignored so a plain `rsync -av` of a local
@@ -95,7 +121,7 @@ run from a directory where that assumption ever stops holding.
 ## Step 4 — watch it obtain the certificate
 
 ```bash
-ssh azureuser@<public_ip> 'cd apps/caddy && docker compose logs -f caddy'
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose logs -f caddy'
 ```
 
 **When it goes wrong:**
@@ -135,7 +161,7 @@ into the cert — check the Caddyfile for an accidental second site block before
 
 ```bash
 ssh azureuser@<public_ip> 'docker exec caddy env | grep AZURE_CLIENT_ID'
-ssh azureuser@<public_ip> 'cd apps/caddy && docker compose logs caddy' | grep -iE 'acme|obtain|renew|identity'
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose logs caddy' | grep -iE 'acme|obtain|renew|identity'
 ```
 
 Expect the client id to match `terraform -chdir=infra/identity output -raw edge_dns_client_id`, and
@@ -145,23 +171,36 @@ after a redeploy is a failure signal, not a nuisance (ADR-0009 §5).
 **Persistence check** (cheap version — a full VM-recreate check is the `verify-persistence` skill):
 
 ```bash
-ssh azureuser@<public_ip> 'cd apps/caddy && docker compose down && docker compose up -d'
-ssh azureuser@<public_ip> 'cd apps/caddy && docker compose logs caddy' | grep -i acme
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose down && docker compose up -d'
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose logs caddy' | grep -i acme
 ```
 
 Expect the cert to load from `/data` with no new ACME order — Caddy logs loading an existing
 certificate, not requesting one.
 
-**After a VM recreate (a resume).** Since `#99`, Docker's storage lives on `/data`, so the Caddy
-container and the `web` network survive and the container restarts by itself — but `./Caddyfile`
-and `.env` live in `/home/azureuser/apps` on the OS disk, which the recreate replaced. Redo Steps 2
-and 3 before expecting Caddy to serve (Step 1 will just report that `web` already exists). If the
-restarting container left an empty `Caddyfile` *directory* behind, remove it before the `rsync`.
+**After a VM recreate (a resume): nothing to do.** The container, its image, the `web` network and
+— since `#101` — its bind sources all live on `/data`, so Docker restarts Caddy by itself, and
+`resume.yml` verifies it (HTTPS 200, wildcard-only SAN, no ACME order since boot).
+
+## One-time migration from `~/apps` (#101)
+
+A node deployed before `#101` has a Caddy container whose bind sources point at
+`/home/azureuser/apps/caddy`. On the first resume after `#101` that container restart-loops (exit
+127) and `resume.yml`'s health check fails — expected, once. Migrate:
+
+```bash
+ssh azureuser@<public_ip> 'docker rm -f caddy && sudo rm -rf /home/azureuser/apps'   # /data/caddy is untouched
+# then Step 0, Step 2 and Step 3 above
+```
+
+`docker rm -f` removes only the container; every byte that matters is in `/data/caddy`, a different
+bind mount. After `compose up` from `/data/apps/caddy` the container's bind sources are on the pet
+disk, and every later resume is hands-off. Re-run the failed verify job to confirm.
 
 ## Adding a real app
 
 1. `mkdir apps/<name>`, add its `docker-compose.yml` (join network `web`, mount its state under
-   `/data/<name>`).
+   `/data/<name>`). It deploys to `/data/apps/<name>` on the VM, never the home directory.
 2. Add a `handle` block to the **existing** wildcard site in `apps/caddy/Caddyfile`, keyed by a
    `host` matcher for `<name>.az.snehasish-chakraborty.com` — proxying to the app's container name
    on the `web` network (e.g. `reverse_proxy <name>:8080`). Do not add a new top-level site block.

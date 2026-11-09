@@ -56,9 +56,10 @@ terraform -chdir=<module> plan -input=false        # this is also how you "plan 
   contract (#99) formats a disk only if it carries no signature at all, and Docker cannot start
   until `/data` is mounted and passes the data-guard (`docs/runbooks/data_guard.md`).
 - **CI is layered reusable workflows.** Each `deploy-*.yml` is a thin wrapper over
-  `.github/workflows/_terraform.yml`; `deploy.yml` chains all five in order; `destroy.yml`
-  (compute → cloudflare only, skipping the pet disk) also wraps `_terraform.yml` with
-  `destroy: true`. Every module runs **plan** on push/PR and **applies only** via manual
+  `.github/workflows/_terraform.yml`; `deploy.yml` chains all five in order (its compute leg is `_resume.yml`); `park.yml`
+  and `destroy.yml` both call `_park.yml` (verified restic backup → graceful stop → destroy
+  compute; `destroy.yml` then also removes the Cloudflare delegation), and `resume.yml` calls
+  `_resume.yml`. CI reaches nodes through Azure Run Command, not SSH (#101). Every module runs **plan** on push/PR and **applies only** via manual
   `workflow_dispatch` with an apply checkbox (default off). Deploy `push:` triggers are pinned to
   `branches: [main]` — feature branches get their plan from the `pull_request` trigger.
 

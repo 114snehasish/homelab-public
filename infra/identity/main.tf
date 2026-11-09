@@ -115,7 +115,7 @@ locals {
 # Note the limit this implies — a role assignment scoped to an RG is stored on
 # that RG and dies with it, and creating an RG is a subscription-level write
 # anyway. So CI can manage homelab-rg but could never *recreate* it after a
-# deletion. That is acceptable because destroy.yml deliberately never destroys
+# deletion. That is acceptable because park.yml/destroy.yml never destroy
 # infra/network; the break-glass path is a local apply with the SP (roadmap R8).
 resource "azurerm_role_assignment" "homelab_rg_contributor" {
   scope                = data.azurerm_resource_group.homelab.id
@@ -165,7 +165,7 @@ resource "azurerm_role_assignment" "vm_ssh_key_reader" {
 # VM with no credential on disk anywhere — libdns/azure falls back to managed
 # identity when tenant_id/client_id/client_secret are all left empty.
 #
-# User-assigned, not system-assigned: compute/vm is cattle (destroy.yml tears
+# User-assigned, not system-assigned: compute/vm is cattle (park.yml tears
 # it down every park cycle). A system-assigned identity dies with the VM and
 # mints a new principal_id, breaking the role assignment below on every
 # recreate. This one is created once, here, and compute/vm only ever attaches
@@ -315,7 +315,7 @@ resource "azurerm_role_assignment" "persist_disk_writer" {
 # backups it writes. ADR-0009 §6a.
 #
 # User-assigned, not system-assigned, for the same reason as the edge DNS
-# identity: compute/vm is cattle and destroy.yml tears it down every park cycle,
+# identity: compute/vm is cattle and park.yml tears it down every park cycle,
 # and a system-assigned identity dies with the VM and mints a new principal_id,
 # breaking the role assignment below on every recreate.
 #

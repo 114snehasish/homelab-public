@@ -1,0 +1,361 @@
+name: Park (reusable)
+
+# The one implementation of "park" (#101, ADR-0009 §5): final restic backup ->
+# graceful stop -> deallocate -> destroy compute/vm. Call-only, like
+# _terraform.yml. Two thin callers dispatch it:
+#
+#   park.yml     park, and nothing else. The only caller exposing skip_backup.
+#   destroy.yml  park, then the infra/cloudflare leg (the NS delegation).
+#
+# There is exactly one destroy path for compute in CI, and it cannot run
+# without a verified backup unless a human typed the bypass confirmation. That
+# is what the #118 comment ("never two divergent destroy paths") and the 2026-09-08
+# review's finding 3 asked for.
+#
+# DELIBERATELY NO TOP-LEVEL `concurrency:`. Every caller holds the workflow-level
+# `homelab-terraform` group. A called workflow that declared that same group would
+# collide with its caller (GitHub does not document called-workflow concurrency,
+# and the reported behaviour is a "deadlock" cancellation). The Terraform job below
+# still takes _terraform.yml's job-level `tf-homelab.compute.tfstate` group, so the
+# state blob stays protected exactly as it is for every other run (review finding 4).
+#
+# FLEET-WIDE, ON PURPOSE. compute/vm builds every fleet.tfvars entry with
+# for_each, so this parks every node: each one is backed up, stopped and
+# destroyed. Per-node park is #167. A node with no backup contract (restic ships
+# only to the public-edge node until #166) fails its backup, so park aborts before
+# anything is stopped.
+#
+# THE ORDER, AND WHY EACH STEP IS THERE:
+#   1. backup   restic-backup final, with apps RUNNING: the pre-hooks need them up
+#               (pg_dump), and this is the same code path the nightly exercises.
+#   2. quiesce  az vm stop (graceful by default), then deallocate. Two reasons:
+#               - azurerm 5.8.0 deletes a running VM without powering it off, and
+#                 Terraform destroys the data-disk attachment before the VM — so
+#                 without this step park hot-detaches /data from a live machine.
+#               - A daemon shutdown does not mark containers as user-stopped (moby
+#                 sets that flag only when the daemon is NOT shutting down), so
+#                 `restart: unless-stopped` brings them back on resume. A
+#                 `docker compose stop/down` here would leave them down forever
+#                 (ADR-0009 §4's trap) — which is why park never does that.
+#               Deallocated is also a cheap place to be stuck if the destroy is
+#               delayed or cancelled.
+#   3. destroy  compute/vm only (ADR-0009 §5), through _terraform.yml.
+#   4. verify   what CI can see: nothing of the node left in homelab-rg, the data
+#               disk Unattached. The subscription-wide check is #102's drill.
+#
+# DRY RUN (apply = false): preflight reads Azure and the destroy job plans; no
+# Run Command, no stop, nothing changes. That property is load-bearing — the
+# backup and quiesce jobs are gated on outputs that are false unless `apply`.
+
+on:
+  workflow_call:
+    inputs:
+      apply:
+        description: 'Actually back up, stop and destroy. False = read-only preflight + plan -destroy.'
+        required: false
+        type: boolean
+        default: false
+      skip_backup:
+        description: 'Emergency bypass: park without a final backup. Honoured only with the confirmation below.'
+        required: false
+        type: boolean
+        default: false
+      skip_backup_confirm:
+        description: 'Must equal park-without-backup for skip_backup to be honoured.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  # _terraform.yml declares pull-requests: write; a caller must cover what its
+  # callee declares or the run fails at startup with zero jobs.
+  pull-requests: write
+  id-token: write
+
+env:
+  RG: homelab-rg
+  DISK_RG: homelab-persist-rg
+  BYPASS_PHRASE: park-without-backup
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    outputs:
+      nodes: ${{ steps.state.outputs.nodes }}
+      has_nodes: ${{ steps.state.outputs.has_nodes }}
+      do_backup: ${{ steps.state.outputs.do_backup }}
+      do_quiesce: ${{ steps.state.outputs.do_quiesce }}
+      bypass: ${{ steps.state.outputs.bypass }}
+    steps:
+      # Before any Azure call, so a mistyped bypass costs nothing. The phrase
+      # arrives through env, never interpolated into the script: it is free text.
+      - name: Check the bypass confirmation
+        env:
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
+          CONFIRM: ${{ inputs.skip_backup_confirm }}
+        run: |
+          if [ "$SKIP_BACKUP" = "true" ] && [ "$CONFIRM" != "$BYPASS_PHRASE" ]; then
+            echo "::error::skip_backup is set but skip_backup_confirm is not '${BYPASS_PHRASE}'. Nothing was done."
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      # The fleet as it exists in Azure, not as fleet.tfvars says it should: a
+      # node that was never created has nothing to back up, and a node that
+      # exists is exactly what the destroy will remove.
+      - name: Read the fleet's live state
+        id: state
+        env:
+          APPLY: ${{ inputs.apply }}
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
+        run: |
+          set -euo pipefail
+          nodes="$(az vm list -g "$RG" -d \
+            --query '[].{name:name, power:powerState, disks:storageProfile.dataDisks[].name}' -o json)"
+          has_nodes="$(jq 'length > 0' <<<"$nodes")"
+          not_running="$(jq -r '[.[] | select(.power != "VM running") | "\(.name) (\(.power))"] | join(", ")' <<<"$nodes")"
+
+          bypass=false
+          [ "$SKIP_BACKUP" = "true" ] && bypass=true
+
+          # A stopped or deallocated node cannot take a backup. Refuse rather
+          # than guess: either a previous park got this far (re-run that run's
+          # failed jobs — its backup already succeeded) or it is an emergency.
+          if [ "$APPLY" = "true" ] && [ "$bypass" = "false" ] && [ -n "$not_running" ]; then
+            echo "::error::Not running: ${not_running}. No backup can be taken from a stopped node. If an earlier park stopped it, use 'Re-run failed jobs' on that run (its backup already succeeded); otherwise dispatch park.yml with skip_backup."
+            exit 1
+          fi
+
+          do_quiesce=false; do_backup=false
+          if [ "$APPLY" = "true" ] && [ "$has_nodes" = "true" ]; then
+            do_quiesce=true
+            [ "$bypass" = "false" ] && do_backup=true
+          fi
+
+          {
+            echo "nodes=$(jq -c . <<<"$nodes")"
+            echo "has_nodes=$has_nodes"
+            echo "do_backup=$do_backup"
+            echo "do_quiesce=$do_quiesce"
+            echo "bypass=$bypass"
+          } >>"$GITHUB_OUTPUT"
+
+          {
+            echo "### Park preflight"
+            echo
+            if [ "$APPLY" != "true" ]; then echo "**Dry run** — read-only: nothing will be backed up, stopped or destroyed."; fi
+            if [ "$has_nodes" != "true" ]; then echo "**No VMs in \`$RG\`** — the fleet is already parked; the destroy only clears leftovers."; fi
+            echo
+            echo "| Node | Power | Data disks |"
+            echo "|---|---|---|"
+            jq -r '.[] | "| \(.name) | \(.power) | \(.disks | join(", ")) |"' <<<"$nodes"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  backup:
+    name: Final backup
+    needs: preflight
+    if: needs.preflight.outputs.do_backup == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      snapshots: ${{ steps.backup.outputs.snapshots }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      # Every node, sequentially; the first failure fails the job, and a failed
+      # job here means quiesce and destroy never run. No backup, no park.
+      - name: restic-backup final on every node
+        id: backup
+        env:
+          NODES: ${{ needs.preflight.outputs.nodes }}
+        run: |
+          set -euo pipefail
+          snapshots=""
+          echo "### Final snapshots" >>"$GITHUB_STEP_SUMMARY"
+          for node in $(jq -r '.[].name' <<<"$NODES"); do
+            if ! out="$(scripts/lifecycle/run-on-node.sh "$node" scripts/lifecycle/park-backup.sh 3600 park-backup)"; then
+              printf '%s\n' "$out"
+              echo "::error::${node}: the final backup failed. Park aborts before anything is stopped or destroyed."
+              exit 1
+            fi
+            printf '%s\n' "$out"
+            id="$(tail -n1 <<<"$out" | sed -n 's/^snapshot_id=\([0-9a-f]\{64\}\)$/\1/p')"
+            if [ -z "$id" ]; then
+              echo "::error::${node}: no verified snapshot id. Park aborts before anything is stopped or destroyed."
+              exit 1
+            fi
+            echo "- \`${node}\`: \`${id}\`" >>"$GITHUB_STEP_SUMMARY"
+            snapshots="${snapshots}${node}=${id} "
+          done
+          echo "snapshots=${snapshots% }" >>"$GITHUB_OUTPUT"
+
+  quiesce:
+    name: Graceful stop + deallocate
+    needs: [preflight, backup]
+    # The backup must have SUCCEEDED, or been deliberately bypassed. A failed
+    # backup leaves this job skipped, and a skipped quiesce keeps destroy skipped.
+    if: >-
+      !cancelled() &&
+      needs.preflight.outputs.do_quiesce == 'true' &&
+      (needs.backup.result == 'success' ||
+       (needs.backup.result == 'skipped' && needs.preflight.outputs.bypass == 'true'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: Stop every node gracefully, then deallocate
+        env:
+          NODES: ${{ needs.preflight.outputs.nodes }}
+          BYPASS: ${{ needs.preflight.outputs.bypass }}
+        run: |
+          set -euo pipefail
+          for node in $(jq -r '.[].name' <<<"$NODES"); do
+            power="$(az vm get-instance-view -g "$RG" -n "$node" \
+              --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv)"
+            echo "${node}: ${power}"
+            if [ "$power" = "PowerState/running" ] || [ "$power" = "PowerState/starting" ]; then
+              # Graceful: the guest runs its shutdown, Docker stops containers
+              # without flagging them user-stopped, systemd unmounts /data.
+              if ! timeout 900 az vm stop -g "$RG" -n "$node" -o none; then
+                if [ "$BYPASS" = "true" ]; then
+                  echo "::warning::${node}: graceful stop did not finish in 900s; forcing (--skip-shutdown). /data will be crash-consistent."
+                  az vm stop -g "$RG" -n "$node" --skip-shutdown -o none
+                else
+                  echo "::error::${node}: graceful stop did not finish in 900s. The backup is taken; re-run this job, or park with skip_backup to force it."
+                  exit 1
+                fi
+              fi
+            fi
+            az vm deallocate -g "$RG" -n "$node" -o none
+            power="$(az vm get-instance-view -g "$RG" -n "$node" \
+              --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv)"
+            [ "$power" = "PowerState/deallocated" ] || { echo "::error::${node}: expected PowerState/deallocated, got ${power}"; exit 1; }
+            echo "${node}: deallocated"
+          done
+
+  destroy:
+    name: Destroy Compute
+    needs: [preflight, quiesce]
+    # Runs when: a dry run (plan only), or nothing is left to quiesce (already
+    # parked — clears leftovers), or every node was quiesced. Never after a failed
+    # or skipped backup on a running fleet.
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      (inputs.apply != true ||
+       needs.preflight.outputs.has_nodes != 'true' ||
+       needs.quiesce.result == 'success')
+    uses: ./.github/workflows/_terraform.yml
+    secrets: inherit
+    with:
+      working_directory: compute/vm
+      # Must match deploy-compute.yml's state_key (E17.4, #163): it selects the
+      # state blob AND is the tf- concurrency group, so a mismatch would let a
+      # park and a deploy of the same fleet run at once.
+      state_key: homelab.compute.tfstate
+      # Required even to plan a destroy: `instances` has no default.
+      var_file: ../../fleet.tfvars
+      destroy: true
+      apply: ${{ inputs.apply == true }}
+
+  verify:
+    name: Verify + summary
+    needs: [preflight, backup, quiesce, destroy]
+    if: always() && inputs.apply == true && needs.preflight.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      # What CI can see (acceptance 1, scoped): Contributor on homelab-rg and
+      # disks/read in the persist RG. It cannot list the subscription — by
+      # design — so the full parked-set check is the owner's, recorded in #102.
+      - name: Assert the parked set
+        env:
+          NODES: ${{ needs.preflight.outputs.nodes }}
+          HAS_NODES: ${{ needs.preflight.outputs.has_nodes }}
+          DESTROY: ${{ needs.destroy.result }}
+          QUIESCE: ${{ needs.quiesce.result }}
+          BACKUP: ${{ needs.backup.result }}
+          BYPASS: ${{ needs.preflight.outputs.bypass }}
+          SNAPSHOTS: ${{ needs.backup.outputs.snapshots }}
+          ZONE: ${{ secrets.DNS_ZONE_NAME }}
+        run: |
+          set -uo pipefail
+          s="$GITHUB_STEP_SUMMARY"
+          fail=0
+          echo "### Park result" >>"$s"
+
+          if [ "$DESTROY" != "success" ]; then
+            if [ "$QUIESCE" = "success" ]; then
+              {
+                echo "**HALF-FINISHED PARK.** The fleet is backed up and deallocated, but compute/vm was not destroyed (destroy: \`$DESTROY\`)."
+                echo "Use **Re-run failed jobs** on this run — the backup already succeeded and is not repeated."
+              } >>"$s"
+            else
+              echo "**Nothing was destroyed** (backup: \`$BACKUP\`, quiesce: \`$QUIESCE\`, destroy: \`$DESTROY\`). No backup, no park." >>"$s"
+            fi
+            exit 1
+          fi
+
+          if [ "$HAS_NODES" = "true" ]; then
+            echo "| Node | VM/NIC/IP/OS disk gone | A record gone | Data disk |" >>"$s"
+            echo "|---|---|---|---|" >>"$s"
+            records="$(az network dns record-set a list -g "$RG" -z "$ZONE" --query '[].name' -o tsv)"
+            for node in $(jq -r '.[].name' <<<"$NODES"); do
+              left="$(az resource list -g "$RG" --query "[?name=='${node}' || name=='${node}-nic' || name=='${node}-public-ip' || name=='${node}-osdisk'].name" -o tsv)"
+              compute="yes"; [ -n "$left" ] && { compute="NO: ${left//$'\n'/, }"; fail=1; }
+              record="yes"; grep -qx "$node" <<<"$records" && { record="NO"; fail=1; }
+              disks=""
+              for d in $(jq -r --arg n "$node" '.[] | select(.name == $n) | .disks[]' <<<"$NODES"); do
+                st="$(az disk show -g "$DISK_RG" -n "$d" --query diskState -o tsv 2>/dev/null || echo missing)"
+                [ "$st" = "Unattached" ] || fail=1
+                disks="${disks}${d}: ${st} "
+              done
+              echo "| ${node} | ${compute} | ${record} | ${disks:-none} |" >>"$s"
+            done
+            grep -qx '\*' <<<"$records" && { echo "- Wildcard \`*\` record still present" >>"$s"; fail=1; }
+          fi
+
+          {
+            echo
+            if [ "$BYPASS" = "true" ]; then
+              echo "> [!WARNING]"
+              echo "> **Parked WITHOUT a final backup** (skip_backup). The data disks survive the destroy, but /data is only as clean as the stop was, and the newest T2 snapshot is whatever the last nightly took — normally under 24 h old, if the timer was healthy. CI cannot read the repository, so check it from a laptop:"
+              # shellcheck disable=SC2016 # literal backticks: markdown code, not expansion
+              echo '> `az login; export AZURE_ACCOUNT_NAME=homelabpersistbackupsa RESTIC_REPOSITORY=azure:restic:/ RESTIC_PASSWORD_FILE=./restic-password; restic snapshots`'
+              echo "> (docs/runbooks/restic_backup.md, *From a laptop, with no VM at all*)."
+            else
+              echo "Final snapshots: ${SNAPSHOTS:-none (nothing was running)}"
+            fi
+            echo
+            echo "- Scope: **fleet-wide** — every node in compute/vm (per-node park is #167). The NS delegation, DNS zone, network, disks and backups all stay."
+            echo "- Expected parked run-rate: **≈ ₹277/mo** (ADR-0009 §8, computed from retail prices; #102 measures it)."
+            echo "- Full parked-set check (owner): \`az resource list --query \"[].{rg:resourceGroup, type:type, name:name}\" -o table\`"
+          } >>"$s"
+
+          exit "$fail"

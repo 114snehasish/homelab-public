@@ -43,8 +43,8 @@ on:
         required: false
         type: string
         default: ''
-      # Used only by destroy.yml (#153), which is how that workflow stopped
-      # hand-rolling its own jobs. It flips the plan to `-destroy`; the apply
+      # Used only by _park.yml's compute destroy and destroy.yml's cloudflare leg
+      # (#153, #101) — how destroy stopped hand-rolling its own jobs. It flips the plan to `-destroy`; the apply
       # gate below is deliberately shared rather than duplicated, so
       # `destroy: true` on its own still only ever produces a dry run.
       destroy:
@@ -273,8 +273,8 @@ jobs:
             }
 
       # Applies whatever plan was saved above, which since #153 may be a
-      # destroy plan (destroy.yml passes `destroy: true` and maps its
-      # `apply_destroy` checkbox onto `apply`). One gate covers both
+      # destroy plan (_park.yml and destroy.yml pass `destroy: true` and map
+      # their apply checkbox onto `apply`). One gate covers both
       # directions on purpose: a second, destroy-specific gate would be a
       # second thing to get wrong on the one path that deletes real infra.
       - name: Terraform Apply
