@@ -10,8 +10,8 @@
 # It checks the resume contract from the inside, in the order the boot runs it:
 #   cloud-init finished -> the data disk is mounted and passed its guard ->
 #   it was cleanly unmounted at park -> Docker is up -> every container that is
-#   meant to be running is running, and stays running -> Caddy loaded its
-#   certificate rather than ordering a new one.
+#   meant to be running is running, and stays running -> Caddy placed no fresh
+#   ACME order and has no unresolved certificate renewal failure.
 # The HTTPS check runs from the GitHub runner instead (it must see what a
 # client sees), so it is not here.
 #
@@ -99,15 +99,28 @@ else
   done <<<"$second"
 fi
 
-# 6. Caddy loaded its certificate from /data/caddy rather than ordering one.
-#    ADR-0009 §5: an ACME order after a resume is a failure signal, not a
-#    nuisance — the cert store is T1 and must have survived.
+# 6. Caddy's certificate, two separate failures. Neither is visible from outside
+#    while the current certificate is still valid.
+#    - A fresh ACME order. ADR-0009 §5: after a resume that is a failure signal,
+#      not a nuisance — the cert store is T1 and must have survived. A routine
+#      renewal logs `renewing certificate`, which this deliberately does not match.
+#    - A renewal failing (#285). On 2026-11-09 this check said OK while Caddy had
+#      failed 6 renewals and succeeded at none. Only the latest outcome counts, so
+#      a failed attempt that a later renewal recovered from still passes.
 if docker inspect caddy >/dev/null 2>&1; then
   boot_epoch="$(date -d "$(uptime -s)" +%s)"
-  if docker logs --since "$boot_epoch" caddy 2>&1 | grep -qE 'obtaining certificate|certificate obtained successfully'; then
+  caddy_log="$(docker logs --since "$boot_epoch" caddy 2>&1)"
+  caddy_fatals="$fatal_count"
+  if grep -qE 'obtaining certificate|certificate obtained successfully' <<<"$caddy_log"; then
     bad "caddy: ordered a certificate since boot — the ACME store on /data/caddy did not survive"
-  else
-    ok "caddy: no ACME order since boot (certificate loaded from /data/caddy)"
+  fi
+  last_failure="$(grep -n 'could not get certificate from issuer' <<<"$caddy_log" | tail -n 1 | cut -d: -f1)"
+  last_renewal="$(grep -n 'certificate renewed successfully' <<<"$caddy_log" | tail -n 1 | cut -d: -f1)"
+  if [[ -n "$last_failure" && "${last_renewal:-0}" -lt "$last_failure" ]]; then
+    bad "caddy: certificate renewal is failing, with no successful renewal after the last failure — docker logs caddy | grep 'could not get certificate'"
+  fi
+  if [[ "$fatal_count" -eq "$caddy_fatals" ]]; then
+    ok "caddy: no ACME order and no unresolved renewal failure since boot"
   fi
 fi
 

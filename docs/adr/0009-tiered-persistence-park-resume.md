@@ -39,7 +39,7 @@ epic's original 2026-07-05 scope:
 
 | Tier | What | Where it lives | Who creates it | Survives a park |
 |---|---|---|---|---|
-| **T0 — control** | Terraform state; DNS zone `az.snehasish-chakraborty.com`; the backup storage account `homelabpersistbackupsa` and its `restic` container; Key Vault (E05); all three UAMIs and every role assignment; VNet/subnet/NSG | `do-not-delete`, `homelab-rg`, `homelab-identity-rg`, `homelab-persist-rg` | out-of-band script (§2), `infra/dns`, `infra/backup`, `infra/identity`, `infra/network` | **yes** |
+| **T0 — control** | Terraform state; DNS zone `az.snehasish-chakraborty.com`; the backup storage account `homelabpersistbackupsa` and its `restic` container; Key Vault (E05); both UAMIs and every role assignment; VNet/subnet/NSG | `do-not-delete`, `homelab-rg`, `homelab-identity-rg`, `homelab-persist-rg` | out-of-band script (§2), `infra/dns`, `infra/backup`, `infra/identity`, `infra/network` | **yes** |
 | **T1 — hot block** | The pet disk: live databases, app state, Prometheus/Loki history, Caddy's cert store and ACME account (`/data/caddy`), k3s PVs (`/data/k8s-pv`) | `homelab-persist-rg`, attached at LUN 10, mounted `/data` | `infra/storage` (Terraform) | **yes** |
 | **T2 — cold logical** | restic repository: encrypted, deduplicated, versioned snapshots of `/data` | `restic` container in `homelabpersistbackupsa` (RG `homelab-persist-rg`) | account and container by `infra/backup`; snapshots by `#100`, running on the VM | **yes** |
 | *(untiered)* | The VM, NIC, public IP, OS disk | `homelab-rg` | `compute/vm` | **no — destroyed by park** |
@@ -376,7 +376,7 @@ open.** Per (LUN → mount) entry, every boot: `homelab-persist-prepare@<lun>.se
 ### 4. What persists, and what resets every cycle
 
 **Persists.** *T0:* Terraform state; the DNS zone and its static records; the backup storage account
-and restic repository; all three user-assigned identities and every role assignment; VNet, subnet, NSG and
+and restic repository; both user-assigned identities and every role assignment; VNet, subnet, NSG and
 the resource groups themselves; Key Vault once E05 lands. *T1, on `/data`:* app state and live
 databases; Prometheus and Loki history; Caddy's certificates and ACME account; k3s PVs; and, since
 `#99`, Docker's and containerd's storage — images, snapshots, volumes, networks and containers.
@@ -501,8 +501,8 @@ CI identity's Contributor on `homelab-rg`), needs no key and no NSG change, and 
 is delivered as a VM extension, so `compute/vm` sets `allow_extension_operations = true`. **That is a
 posture change, recorded as roadmap R23**: the CI identity can now run root commands inside a running
 node. It is not new *reach* — Contributor on `homelab-rg`, `disks/write` in the persist RG and
-Managed Identity Operator over both identities already let CI build a VM that holds the pet disk and
-both identities — but it removes the friction and the visible VM churn of doing so.
+Managed Identity Operator over the edge identity already let CI build a VM that holds the pet disk and
+that identity — but it removes the friction and the visible VM churn of doing so.
 
 **Not done, and recorded:** Telegram notifications on completion — deferred to E08 (`#65`), the same
 call `#100` made; GitHub's own failed-run notification and the job summaries cover a human-dispatched
@@ -522,6 +522,10 @@ records why, about the state container:
 
 Putting an account key on the internet-facing edge VM would undo E02's posture in the one place that
 holds every backup.
+
+*The separate identity below, and the `AZURE_CLIENT_ID` pin that went with it, were reversed by the
+2026-11-09 amendment at the end of this section. The container scope and the refusal of account keys
+stand.*
 
 **Decision: a third user-assigned managed identity, `homelab-backup-identity`, holding `Storage Blob
 Data Contributor` scoped to the `restic` container — not the storage account.** Same container-scope
@@ -545,6 +549,40 @@ the IMDS token request ambiguous, and the failure would surface weeks later as a
 renewal failure. **So `#100` must pin `AZURE_CLIENT_ID` explicitly for both consumers** — adding it
 to `apps/caddy/.env` in the same PR that attaches the backup identity. Both values are client ids:
 identifiers, not secrets, exactly like the two entries already in that file.
+
+##### Amendment (2026-11-09, #285) — one identity, because the pin never worked
+
+**The paragraph above predicted the failure correctly and prescribed a fix that could not work.**
+`caddy-dns/azure` v0.6.0 uses `libdns/azure` v0.5.0, whose `client.go` calls
+`azidentity.NewManagedIdentityCredential(nil)`: it names no client id and never reads
+`AZURE_CLIENT_ID`. Setting `client_id` in the Caddyfile is no way out either, because setting any of
+`tenant_id`/`client_id`/`client_secret` selects `NewClientSecretCredential`. So this plugin works only
+on a VM carrying exactly one user-assigned identity. `#100` attached a second one, and on 2026-11-09,
+the first start inside Let's Encrypt's renewal window, every renewal failed with IMDS's *"Multiple
+user assigned identities exist"*. Caddy kept serving its existing certificate, which expires
+2026-12-06, so nothing looked wrong. `#100`'s evidence had proved Caddy could *load* a certificate,
+not renew one, and `node-health.sh` reported OK for the same reason.
+
+**Decision: the edge VM carries exactly one user-assigned identity, `homelab-edge-dns-identity`,
+holding both `DNS Zone Contributor` on the zone and `Storage Blob Data Contributor` on the `restic`
+container.** `homelab-backup-identity`, its grant and CI's `Managed Identity Operator` over it are
+removed. The name now understates the identity; renaming it would replace it and mint a new client id
+for no functional gain, and `#286` would restore the narrow meaning. restic still receives
+`AZURE_CLIENT_ID`, now naming this identity, because its scripts require the variable.
+`node-health.sh` now reports FATAL when a failed renewal has no later success.
+
+**What this costs.** One identity holds DNS and backup rights, so the audit trail can no longer tell
+them apart, and a token minted for either purpose is valid for both.
+
+**It gives up less isolation than it appears to.** IMDS serves a token for *any* identity attached to
+the VM to any process that names its client id, so a compromised container on this VM could already
+request the backup identity's token. The two-identity design separated the audit trail and nothing
+else; it never isolated Caddy from the backups, and this ADR should not have implied that it did. R22
+and its mitigation, blob versioning plus 30-day soft delete (§6c), are unchanged in substance.
+
+**Follow-ups.** `#286` forks `libdns/azure` to honour a client id and splits the identities again.
+`#166` must decide what identity a private node carries, since this one holds DNS rights a private
+node should not get.
 
 #### 6b. The `restic` container is **Hot**, not Cool
 
@@ -671,7 +709,7 @@ At a **stated ₹85/USD** — the rate `docs/roadmap.md`'s R19 already implies (
 | Inter-region egress | `$0.00` | ₹0 |
 | Azure DNS public zone (first 25 zones) + query volume at lab scale | `$0.50` | **₹43** |
 | Terraform state blobs (`do-not-delete`, pre-existing, < 1 MB) | ~`$0.00` | ₹0 |
-| VNet, subnet, NSG, all resource groups, all three UAMIs, every role assignment | `$0.00` | ₹0 |
+| VNet, subnet, NSG, all resource groups, both UAMIs, every role assignment | `$0.00` | ₹0 |
 | **Total** | **`$3.26`** | **≈ ₹277** |
 
 **≈ ₹123 of headroom** against the ≤ ₹400 target — which is thinner than it looks, and one specific
@@ -750,7 +788,7 @@ exists, it supersedes this table and this ADR is edited to match.
 - [x] Raise blob soft-delete retention to 30 days and enable versioning, or consciously accept a weaker R22 posture — **resolved by the 2026-09-28 amendment, and neither branch was taken.** The repository moved to its own account (`homelabpersistbackupsa`), where versioning and 30-day blob and container soft delete are declared in `infra/backup` and apply to backups only. `listeninfratfstatesa` was not touched.
 - [x] ~~Measure the `southindia` → `centralindia` egress~~ — **void.** The 2026-09-28 amendment makes T2 co-regional with T1, so the charge does not arise. [#102](https://github.com/114snehasish/homelab/issues/102) drops this measurement rather than reporting zero.
 - [x] Verify restic against the real storage account with a **user-assigned** managed identity, and pin the restic version, before [#100](https://github.com/114snehasish/homelab/issues/100) ships — verified end-to-end against `homelabpersistbackupsa` on 2026-09-28, with `shared_access_key_enabled = false` so no account-key path existed even as a fallback. Pinned at **0.19.1**. Evidence on #100.
-- [x] Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a) — done; `.env.example` now carries it as a required value rather than a commented-out fallback.
+- [x] ~~Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a)~~ — **this was ticked wrongly.** `#100` proved Caddy could load a certificate, not renew one, and the second UAMI did break renewal. Resolved by [#285](https://github.com/114snehasish/homelab/issues/285): the edge VM carries one identity and the pin is gone (§6a, 2026-11-09 amendment).
 - [ ] Replace §8's computed table with the figure measured in [#102](https://github.com/114snehasish/homelab/issues/102), or correct the design if reality disagrees.
 - [ ] R22 strong form: custom no-delete data role for the VM + `forget --prune` in a scheduled CI job with its own identity ([#100](https://github.com/114snehasish/homelab/issues/100), §6c). Still open — `#100` shipped the versioning/soft-delete half only.
 - [ ] Restic on every fleet node, not just the public edge — one shared repository with per-host snapshots, staggered `forget --prune` (the exclusive lock collides), and R22 widening to every node. Owned by [#166](https://github.com/114snehasish/homelab/issues/166); until then park aborts on a node without the backup contract (§5, 2026-10-13 amendment).

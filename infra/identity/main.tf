@@ -165,6 +165,10 @@ resource "azurerm_role_assignment" "vm_ssh_key_reader" {
 # VM with no credential on disk anywhere — libdns/azure falls back to managed
 # identity when tenant_id/client_id/client_secret are all left empty.
 #
+# Since E03.7 (#285) it is also the identity restic authenticates as, so the name
+# understates it: renaming would replace it and mint a new client_id for no
+# functional gain, and #286's split would restore the narrow meaning anyway.
+#
 # User-assigned, not system-assigned: compute/vm is cattle (park.yml tears
 # it down every park cycle). A system-assigned identity dies with the VM and
 # mints a new principal_id, breaking the role assignment below on every
@@ -199,6 +203,7 @@ data "azurerm_dns_zone" "homelab" {
 # Caddy's only Azure right: write the ACME DNS-01 TXT challenge into the zone
 # and clean it up after. Scoped to the zone, not homelab-rg — this identity has
 # no reason to touch the VM, the disk, or anything else Contributor would allow.
+# Its one other grant is restic's, edge_restic_blob_contributor below.
 resource "azurerm_role_assignment" "edge_dns_zone_contributor" {
   scope                = data.azurerm_dns_zone.homelab.id
   role_definition_name = "DNS Zone Contributor"
@@ -348,6 +353,24 @@ locals {
   # (infra/backup sets shared_access_key_enabled = false), so a data-plane read
   # would depend on the very grant being created below.
   restic_container_scope = "${data.azurerm_storage_account.backup.id}/blobServices/default/containers/${var.restic_container_name}"
+}
+
+# The edge identity's second right (E03.7, #285): restic's read and write on one
+# container. It sits on the DNS identity because the edge VM must carry exactly
+# ONE user-assigned identity: libdns/azure asks IMDS for a token without naming a
+# client id, and IMDS refuses that request when two are attached. The cost is
+# recorded in ADR-0009 §6a's 2026-11-09 amendment.
+#
+# Scoped to the CONTAINER, never the account, for the reason given on the grant
+# below: the scope states what the credential may reach, and the principal
+# holding it runs on the lab's only internet-facing host. `Storage Blob Data
+# Contributor` can also DELETE blobs, which is risk R22 — see ADR-0009 §6c.
+resource "azurerm_role_assignment" "edge_restic_blob_contributor" {
+  scope                = local.restic_container_scope
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.homelab_edge_dns.principal_id
+
+  skip_service_principal_aad_check = true # same replication-lag reason as above
 }
 
 # restic's only Azure right: read and write blobs in one container.

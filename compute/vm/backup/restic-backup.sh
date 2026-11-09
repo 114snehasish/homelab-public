@@ -22,8 +22,8 @@
 # mount anyway, because it is also invoked by hand.
 #
 # THE CREDENTIAL. There is none on this machine. restic authenticates as the
-# user-assigned managed identity homelab-backup-identity through the Azure SDK
-# credential chain, which selects it from AZURE_CLIENT_ID in the environment file
+# VM's one user-assigned managed identity, homelab-edge-dns-identity, through the
+# Azure SDK credential chain, named by AZURE_CLIENT_ID in the environment file
 # below. The account (homelabpersistbackupsa) has shared_access_key_enabled =
 # false, so there is no account key to fall back to even by mistake. The only
 # secret in play is the repository password, which is a file on the data disk.
@@ -73,11 +73,11 @@ for v in AZURE_ACCOUNT_NAME AZURE_CLIENT_ID RESTIC_REPOSITORY RESTIC_PASSWORD_FI
   [[ -n "${!v:-}" ]] || fatal "${v} is not set in ${ENV_FILE}."
 done
 
-# AZURE_CLIENT_ID pins WHICH managed identity to use, and it is load-bearing
-# because the edge VM carries two (ADR-0013's Caddy DNS-01 identity and this
-# one). With two attached, an unpinned request is ambiguous. Note it is exported
-# only into this process: exported system-wide it would leak into Caddy's
-# container and select the wrong identity there — the same bug, reversed.
+# AZURE_CLIENT_ID names the identity restic authenticates as, and it is exported
+# only into this process. The edge VM carries exactly one user-assigned identity
+# (#285), so the value selects nothing today; the check above still requires it
+# so restic's choice stays explicit. It cannot protect Caddy: the DNS plugin never
+# reads it, which is why this VM must not carry a second identity at all.
 
 # --- The disk ------------------------------------------------------------------
 mountpoint -q "$SOURCE" ||

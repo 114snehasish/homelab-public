@@ -106,21 +106,21 @@ it (#162), so the key `homelab-edge` reproduces the deployed node's names byte-f
   also what keeps per-app hostnames out of a publicly mirrored zone (risk R6).
 - `azurerm_virtual_machine_data_disk_attachment`: the dynamic link between a disposable VM and
   *its own* persistent disk, at the entry's `data_disk_lun` (default 10).
-- ↳ `identity` (dynamic block, E03.3 #39; extended E15.4 #100): `UserAssigned`, attached only to the
-  `public_edge` instance — **two** UAMIs from `infra/identity`, `homelab-edge-dns-identity` and
-  `homelab-backup-identity`, looked up by `data "azurerm_user_assigned_identity" "edge_dns"` and
-  `"backup"`. Adding an identity to an already-deployed VM is an **in-place update**, not a
-  replacement, on this repo's pinned `azurerm ~> 5.0` — confirmed against the real VM (`0 to add, 1
-  to change, 0 to destroy`; apply completed in 18s, no restart). They give Caddy (`apps/caddy`) a
-  credential-free path to the DNS-01 challenge and restic a credential-free path to blob storage; see
+- ↳ `identity` (dynamic block, E03.3 #39; reduced to one identity by E03.7 #285): `UserAssigned`,
+  attached only to the `public_edge` instance — **exactly one** UAMI from `infra/identity`,
+  `homelab-edge-dns-identity`, looked up by `data "azurerm_user_assigned_identity" "edge_dns"`. Adding
+  an identity to an already-deployed VM is an **in-place update**, not a replacement, on this repo's
+  pinned `azurerm ~> 5.0` — confirmed against the real VM (`0 to add, 1 to change, 0 to destroy`;
+  apply completed in 18s, no restart). It gives Caddy (`apps/caddy`) a credential-free path to the
+  DNS-01 challenge and restic a credential-free path to blob storage; see
   [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md) and ADR-0009 §6a.
-  **Two identities make managed-identity auto-selection ambiguous**, so both consumers pin
-  `AZURE_CLIENT_ID` in their own environment — Caddy's in its compose env file, restic's in
-  `/etc/homelab/restic.env`. Dropping either pin does not fail at deploy time; Caddy's surfaces weeks
-  later as a certificate that did not renew.
+  **A second identity stops certificate renewal**: `libdns/azure` requests a token without naming a
+  client id and never reads `AZURE_CLIENT_ID`, and IMDS refuses that request when two are attached.
+  Nothing fails at deploy time; it surfaces at renewal. restic's `AZURE_CLIENT_ID`, in
+  `/etc/homelab/restic.env`, names the same identity.
 - ↳ `backup/` (E15.4, #100): the restic backup service — two systemd timers, their units, the
   wrapper scripts and the exclude list, shipped into `custom_data` by `cloud-init.tf` **only** for
-  the `public_edge` node, since only that node carries the backup identity. Both units
+  the `public_edge` node, since only that node carries the identity holding the restic grant. Both units
   `Requires=homelab-persist.target`, so a backup can never run against a `/data` that is the OS disk
   or half-mounted. Runbook: [`runbooks/restic_backup.md`](runbooks/restic_backup.md).
 
@@ -219,26 +219,25 @@ Both credentials use issuer `https://token.actions.githubusercontent.com` and au
 `api://AzureADTokenExchange`.
 
 - `azurerm_user_assigned_identity.homelab_edge_dns` (`homelab-edge-dns-identity`, E03.3 #39): a
-  second, unrelated UAMI — Caddy's DNS-01 identity, not the CI identity above. No
+  second, unrelated UAMI — the edge VM's only identity, not the CI identity above. No
   `prevent_destroy`: nothing outside this module references its `client_id`, so recreating it
   costs one `infra/identity` re-apply, not a repo-variable update. `compute/vm` looks it up by
-  name and attaches it only to the instance with `public_edge = true`. See
-  [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md).
-- `azurerm_user_assigned_identity.homelab_backup` (`homelab-backup-identity`, E15.4 #100): a third
-  UAMI, restic's. Same reasoning as the edge one — user-assigned so it survives the VM being cattle,
-  no `prevent_destroy` because nothing outside this module pins its `client_id`. It holds exactly one
-  grant, `Storage Blob Data Contributor` on the `restic` **container** in `homelabpersistbackupsa`,
-  which `infra/backup` creates. Never the account: the scope states what the credential may reach,
-  not what happens to sit beside it today.
+  name and attaches it only to the instance with `public_edge = true`. It holds two grants:
+  `DNS Zone Contributor` on the zone for Caddy, and, since E03.7 (#285), `Storage Blob Data
+  Contributor` on the `restic` **container** in `homelabpersistbackupsa`, which `infra/backup`
+  creates. Never the account: the scope states what the credential may reach, not what happens to
+  sit beside it today. See [ADR-0013](adr/0013-caddy-edge-dns01-provider-and-credential-model.md)
+  and ADR-0009 §6a's 2026-11-09 amendment.
 
-### Role assignments (E02.2, #34; extended by E15.0 #205 and E15.4 #100)
-The CI identity holds **six** role assignments, each scoped as narrowly as the thing it enables.
-Four are listed here; the other two are both `Managed Identity Operator`, one per attachable UAMI,
-listed with the identities they scope to — but they are CI grants and `granted_scopes` counts them.
+### Role assignments (E02.2, #34; extended by E15.0 #205)
+The CI identity holds **five** role assignments, each scoped as narrowly as the thing it enables.
+Four are listed here; the fifth is `Managed Identity Operator` over the edge identity, so
+`compute/vm` can attach it. It is a CI grant and `granted_scopes` counts it.
 
-That duplication is why `granted_scopes` became a **list of `{role, scope}` objects** in #100: as a
-map keyed by role name, two `Managed Identity Operator` rows are two identical keys and the plan
-fails with "Duplicate object attribute key".
+`granted_scopes` is a **list of `{role, scope}` objects**. It became one in #100, when a second
+`Managed Identity Operator` grant made two identical map keys and the plan failed with "Duplicate
+object attribute key". #285 removed that grant; the list stays because it matches the shape of
+`az role assignment list`.
 
 | Role | Scope | Enables |
 |---|---|---|
@@ -323,9 +322,9 @@ the plan you want to read them in.
 
 For the edge identity: `edge_dns_client_id`, `edge_dns_uami_id`, `edge_granted_scopes`. Kept as
 separate outputs rather than folded into the ones above — the two identities are unrelated, and
-`granted_scopes` documents the CI identity specifically. `edge_dns_client_id` exists only as the
-`AZURE_CLIENT_ID` fallback for `apps/caddy/.env`, needed if managed-identity auto-selection on the
-VM is ever ambiguous (it is not, today — the VM carries exactly one user-assigned identity).
+`granted_scopes` documents the CI identity specifically. `edge_dns_client_id` is the value
+`compute/vm` renders as restic's `AZURE_CLIENT_ID`; Caddy's DNS plugin cannot use a client id at all,
+which is why the VM must carry exactly one user-assigned identity.
 
 ### Current state
 Since E02.3 (#35) this identity carries **all** CI traffic: every `deploy-*.yml` and
@@ -573,7 +572,7 @@ destroy.yml ─┘   (+ infra/cloudflare leg)          deploy.yml ─┘   (netw
 ```
 
 - **`_park.yml`** (call-only): `preflight` (reads the live fleet with `az vm list`; refuses a stopped node unless `skip_backup`) → `backup` (`scripts/lifecycle/park-backup.sh` on every node via Azure managed Run Command: `restic-backup final`, then the snapshot read back from the repository) → `quiesce` (`az vm stop`, graceful, then `az vm deallocate`) → `destroy` (`compute/vm` through `_terraform.yml`, `destroy: true`) → `verify` (no VM/NIC/public IP/OS disk/A record left in `homelab-rg`, data disks `Unattached`, job summary). `quiesce` runs only if `backup` **succeeded** (or was deliberately bypassed) and `destroy` only if `quiesce` succeeded, so a failed backup stops everything before a single resource changes. Dry run = `preflight` + `plan -destroy`, nothing else.
-- **`_resume.yml`** (call-only): applies `compute/vm` through `deploy-compute.yml`, then `verify`: per node, `scripts/lifecycle/node-health.sh` via Run Command (cloud-init done, `homelab-persist.target` active, `/data` cleanly unmounted at park, Docker up, every restart-policy container running and stable, no ACME order since boot); then, from the runner, `https://test.<zone>` via `curl --resolve` must return `caddy edge ok` with the wildcard as the certificate's only SAN, and a missing NS delegation is warned about. The summary records the resume duration.
+- **`_resume.yml`** (call-only): applies `compute/vm` through `deploy-compute.yml`, then `verify`: per node, `scripts/lifecycle/node-health.sh` via Run Command (cloud-init done, `homelab-persist.target` active, `/data` cleanly unmounted at park, Docker up, every restart-policy container running and stable, no ACME order and no unresolved certificate renewal failure since boot); then, from the runner, `https://test.<zone>` via `curl --resolve` must return `caddy edge ok` with the wildcard as the certificate's only SAN, and a missing NS delegation is warned about. The summary records the resume duration.
 - **`park.yml`** (manual dispatch): `_park.yml` alone — compute only, the delegation stays. The only workflow with `skip_backup`, honoured only with the confirmation `park-without-backup`.
 - **`resume.yml`** (manual dispatch): `_resume.yml` alone — the mirror of `park.yml`.
 - **`deploy.yml`** (manual dispatch): network → dns → cloudflare → storage → compute, with `secrets: inherit`; the compute leg is `_resume.yml`, so an applying full deploy ends with the resume health check. The `apply_terraform` checkbox gates apply in every module job; unchecked runs a plan-only dry run across all five modules.

@@ -17,7 +17,7 @@ wrongly formatted, where RPO is the last nightly snapshot.
 |---|---|
 | Repository | `azure:restic:/` in storage account `homelabpersistbackupsa`, container `restic` |
 | Account | RG `homelab-persist-rg`, `southindia` — co-regional with the disk and the VM |
-| Credential | **none on the VM.** The UAMI `homelab-backup-identity`, `Storage Blob Data Contributor` on that container only |
+| Credential | **none on the VM.** The VM's one UAMI, `homelab-edge-dns-identity`, holding `Storage Blob Data Contributor` on that container only (its other grant is Caddy's, on the DNS zone) |
 | Repository password | `/data/.restic-password`, root-owned `0600`. Copies: password manager, and the `secret-files` container of `listeninfratfstatesa` |
 | Config | `/etc/homelab/restic.env`, rendered per node by Terraform. Identifiers only |
 | Entrypoint | `/usr/local/sbin/restic-backup [init\|nightly\|final]` |
@@ -43,8 +43,8 @@ sudo restic snapshots            # nightly history; `restic` reads /etc/homelab/
 ```
 
 `restic` invoked bare does **not** pick up the environment: the config is sourced by the wrapper
-scripts, not exported system-wide (deliberately — see *Why `AZURE_CLIENT_ID` is not global*). For
-ad-hoc restic commands on the VM:
+scripts, not exported system-wide (see *One identity on this VM*). For ad-hoc restic commands on the
+VM:
 
 ```bash
 sudo bash -c 'set -a; . /etc/homelab/restic.env; set +a; restic snapshots'
@@ -129,28 +129,27 @@ Container-scoped, like every other grant in this lab. It takes a minute or so to
 | `/data is not a mountpoint` | Invoked by hand while the disk is unmounted | As above |
 | `no repository password at /data/.restic-password` | Fresh disk, or the file was lost | Restore it from the password manager or `secret-files` (above). **Do not generate a new one** — it would orphan every snapshot |
 | `no repository at azure:restic:/` | Never initialised, or `RESTIC_REPOSITORY` is wrong | `sudo /usr/local/sbin/restic-backup init`, but first confirm the URL — if a repository does exist, creating a second one is the failure this message prevents |
-| `Fatal: unable to open config file ... AuthorizationPermissionMismatch` | The identity has no data-plane role, or the wrong identity was selected | `az role assignment list --assignee <backup principal> --all` should show exactly one row, scoped to `/containers/restic`. Then check `AZURE_CLIENT_ID` in `/etc/homelab/restic.env` matches `terraform -chdir=infra/identity output -raw backup_client_id` |
-| `ManagedIdentityCredential ... multiple user-assigned identities` | `AZURE_CLIENT_ID` is unset or empty | The VM carries two UAMIs. Both consumers must pin their own — see below |
+| `Fatal: unable to open config file ... AuthorizationPermissionMismatch` | The identity has no data-plane role, or the wrong identity was selected | `az role assignment list --assignee <edge principal> --all` should show exactly two rows: `DNS Zone Contributor` on the zone and `Storage Blob Data Contributor` scoped to `/containers/restic`. Then check `AZURE_CLIENT_ID` in `/etc/homelab/restic.env` matches `terraform -chdir=infra/identity output -raw edge_dns_client_id` |
+| `ManagedIdentityCredential ... multiple user-assigned identities` | A second user-assigned identity is attached to the VM | The VM must carry exactly one. Remove the extra entry from `compute/vm`'s `identity_ids`; a client id cannot fix this for Caddy — see below |
 | `repository is already locked` | A previous run was killed (park timeout, OOM, reboot) | The script runs `restic unlock` every time, which clears **stale** locks automatically. If it persists, a run is genuinely still going: `ps aux \| grep restic` |
 | `pre-hook ... failed` | An app's consistency hook returned non-zero | The run aborted deliberately rather than take an inconsistent snapshot. Fix the hook; `/etc/homelab/backup-pre.d/README` has the contract |
 | `restic backup reported no summary snapshot_id` | The backup did not complete | Treat as failed. The exit status is non-zero, so #101's park will abort before destroying anything |
 
-## Why `AZURE_CLIENT_ID` is not global
+## One identity on this VM
 
-The edge VM carries **two** user-assigned managed identities since #100:
-`homelab-edge-dns-identity` (Caddy's DNS-01, ADR-0013) and `homelab-backup-identity` (this service).
-With two attached, an unpinned managed-identity token request is ambiguous, so each consumer pins its
-own client id in its own environment:
+The edge VM carries **exactly one** user-assigned managed identity since #285:
+`homelab-edge-dns-identity`. It holds `DNS Zone Contributor` on the zone (Caddy's DNS-01, ADR-0013)
+and `Storage Blob Data Contributor` on the `restic` container (this service).
 
-- Caddy → `AZURE_CLIENT_ID` in `apps/caddy/.env`, the **edge DNS** identity
-- restic → `AZURE_CLIENT_ID` in `/etc/homelab/restic.env`, the **backup** identity
+`AZURE_CLIENT_ID` in `/etc/homelab/restic.env` names it for restic. The wrapper scripts source that
+file rather than the unit declaring an `EnvironmentFile`, so a manual run and the timer see the same
+environment.
 
-Exporting either one system-wide would leak it into the other's process and select the wrong
-identity — the same bug with the arrow reversed. That is why the wrapper scripts source their file
-rather than the unit declaring an `EnvironmentFile`, and why nothing writes these into `/etc/profile`.
-
-The Caddy failure mode is the nastier of the two: nothing breaks at deploy time, and it surfaces weeks
-later as a certificate that did not renew.
+Do not attach a second identity for backups. #100 did, and pinned `AZURE_CLIENT_ID` for Caddy, but
+Caddy's DNS plugin (`libdns/azure`) never reads that variable and asks IMDS for a token without naming
+a client id. IMDS refuses that request when two identities are attached. Nothing breaks at deploy
+time: it surfaces at renewal, as a certificate that does not renew. Splitting the identities again
+needs #286's plugin fork first. ADR-0009 §6a records what sharing one identity costs.
 
 ## Restore
 

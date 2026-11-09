@@ -69,7 +69,7 @@ output "persist_disk_role_definition_id" {
 # --- Edge DNS identity outputs (E03.3, #39) -------------------------------
 
 output "edge_dns_client_id" {
-  description = "Client ID of Caddy's edge DNS identity — the AZURE_CLIENT_ID fallback if managed-identity auto-selection on the VM is ever ambiguous"
+  description = "Client ID of the edge VM's one user-assigned identity, used by Caddy's DNS-01 and by restic — AZURE_CLIENT_ID in /etc/homelab/restic.env. Caddy's DNS plugin cannot use a client ID, which is why the VM must carry exactly one identity"
   value       = azurerm_user_assigned_identity.homelab_edge_dns.client_id
 }
 
@@ -79,12 +79,13 @@ output "edge_dns_uami_id" {
 }
 
 # Same purpose as granted_scopes above, kept separate: that output documents
-# the CI identity specifically, this one documents the edge identity Caddy
-# runs as — the two must never be diffed against each other as if one list.
+# the CI identity specifically, this one documents the edge identity Caddy and
+# restic run as — the two must never be diffed against each other as if one list.
 output "edge_granted_scopes" {
-  description = "Role assignments held by Caddy's edge DNS identity, as role name => scope"
+  description = "Role assignments held by the edge VM's identity, as role name => scope"
   value = {
-    (azurerm_role_assignment.edge_dns_zone_contributor.role_definition_name) = azurerm_role_assignment.edge_dns_zone_contributor.scope
+    (azurerm_role_assignment.edge_dns_zone_contributor.role_definition_name)    = azurerm_role_assignment.edge_dns_zone_contributor.scope
+    (azurerm_role_assignment.edge_restic_blob_contributor.role_definition_name) = azurerm_role_assignment.edge_restic_blob_contributor.scope
   }
 }
 

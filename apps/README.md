@@ -80,28 +80,25 @@ doesn't get to own the network's lifecycle.
 
 `apps/caddy/.env` is never committed — `.gitignore` excludes `apps/**/*.env` (with a
 `!apps/**/*.env.example` negation for the committed template). Copy `.env.example`, fill in the
-**three** identifiers, and get it onto the VM out-of-band of `rsync` (which this repo's `.gitignore`
+**two** identifiers, and get it onto the VM out-of-band of `rsync` (which this repo's `.gitignore`
 pattern for `apps/**/*.env` will otherwise correctly, and unhelpfully, also make `rsync --exclude`
 redundant to think about — just `scp` it directly instead):
 
 ```bash
 cp apps/caddy/.env.example apps/caddy/.env
-# Fill in two values:
+# Fill in one value (AZURE_DNS_RESOURCE_GROUP is already set):
 #   AZURE_SUBSCRIPTION_ID  az account show --query id -o tsv
-#   AZURE_CLIENT_ID        terraform -chdir=infra/identity output -raw edge_dns_client_id
 ssh azureuser@<public_ip> 'install -d -m 0755 /data/apps/caddy'
 scp apps/caddy/.env azureuser@<public_ip>:/data/apps/caddy/.env
 ssh azureuser@<public_ip> 'chmod 600 /data/apps/caddy/.env'
 ```
 
-**`AZURE_CLIENT_ID` is required since E15.4 (#100), and leaving it blank fails in the worst possible
-way.** The edge VM now carries **two** user-assigned managed identities — this one and
-`homelab-backup-identity`, which restic authenticates as — so `DefaultAzureCredential` can no longer
-pick one on its own. Nothing breaks at deploy time: Caddy starts, serves the certificate it already
-has from `/data/caddy`, and looks entirely healthy. It breaks **weeks later, at renewal**, long after
-the change that caused it merged. Use the **edge DNS** identity's client id, not the backup one —
-they are two different identities with two different grants, and the wrong one fails the DNS-01
-challenge with an authorization error rather than a recognisable "wrong identity".
+**The edge VM must carry exactly one user-assigned identity, and no setting in this file changes
+that** (#285). The DNS plugin asks IMDS for a token without naming a client id and never reads
+`AZURE_CLIENT_ID`, so with two identities attached IMDS refuses the request. Nothing breaks at deploy
+time: Caddy starts, serves the certificate it already has from `/data/caddy`, and looks entirely
+healthy. It breaks **at renewal**, long after the change that caused it merged. An older `.env` that
+still sets `AZURE_CLIENT_ID` is harmless, because the plugin ignores it.
 
 **Assert:** `ssh azureuser@<public_ip> 'stat -c "%a %n" /data/apps/caddy/.env'` prints
 `600 /data/apps/caddy/.env`. This file holds identifiers, not a secret — but it stays out
@@ -157,16 +154,20 @@ openssl s_client -connect test.az.snehasish-chakraborty.com:443 -servername test
 Expect exactly `DNS:*.az.snehasish-chakraborty.com`. Anything more specific means a hostname leaked
 into the cert — check the Caddyfile for an accidental second site block before anything else.
 
-**Certificate-renewal check** (the E15.4 regression above, caught now rather than in six weeks):
+**Certificate-renewal check** (#285, caught now rather than when the certificate expires). The first
+command makes the request Caddy's DNS plugin makes, with no client id, and prints a count rather than
+the token:
 
 ```bash
-ssh azureuser@<public_ip> 'docker exec caddy env | grep AZURE_CLIENT_ID'
-ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose logs caddy' | grep -iE 'acme|obtain|renew|identity'
+ssh azureuser@<public_ip> "docker exec caddy wget -qO- --header 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/' | grep -c access_token"
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose logs caddy' | grep -E 'renewing certificate|certificate renewed successfully|could not get certificate from issuer|obtaining certificate'
 ```
 
-Expect the client id to match `terraform -chdir=infra/identity output -raw edge_dns_client_id`, and
-the logs to show Caddy **loading** an existing certificate — never ordering a new one. An ACME order
-after a redeploy is a failure signal, not a nuisance (ADR-0009 §5).
+Expect `1` from the first command; `0` usually means a second identity is attached. In the logs,
+`could not get certificate from issuer` with no later `certificate renewed successfully` is a failing
+renewal, and `node-health.sh` reports it as FATAL. `renewing certificate` is routine. `obtaining
+certificate` is a fresh ACME order, which after a redeploy is a failure signal, not a nuisance
+(ADR-0009 §5).
 
 **Persistence check** (cheap version — a full VM-recreate check is the `verify-persistence` skill):
 
@@ -180,7 +181,8 @@ certificate, not requesting one.
 
 **After a VM recreate (a resume): nothing to do.** The container, its image, the `web` network and
 — since `#101` — its bind sources all live on `/data`, so Docker restarts Caddy by itself, and
-`resume.yml` verifies it (HTTPS 200, wildcard-only SAN, no ACME order since boot).
+`resume.yml` verifies it (HTTPS 200, wildcard-only SAN, no ACME order and no unresolved renewal
+failure since boot).
 
 ## One-time migration from `~/apps` (#101)
 

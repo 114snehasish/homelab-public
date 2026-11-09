@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-09-07
 - **Deciders**: repo owner
-- **Related**: [#39](https://github.com/114snehasish/homelab/issues/39) (E03.3, this issue) · [#16](https://github.com/114snehasish/homelab/issues/16) (E03, parent) · [#37](https://github.com/114snehasish/homelab/issues/37) · [#38](https://github.com/114snehasish/homelab/issues/38) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99)
+- **Related**: [#39](https://github.com/114snehasish/homelab/issues/39) (E03.3, this issue) · [#16](https://github.com/114snehasish/homelab/issues/16) (E03, parent) · [#37](https://github.com/114snehasish/homelab/issues/37) · [#38](https://github.com/114snehasish/homelab/issues/38) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#285](https://github.com/114snehasish/homelab/issues/285) · [#286](https://github.com/114snehasish/homelab/issues/286)
 
 ## Context
 
@@ -100,6 +100,23 @@ recreation — `compute/vm` only ever looks it up and attaches it.
   before E03.3"*) was deliberately crossed, not resolved by this ADR** — recorded in
   `docs/roadmap.md`'s E15/E03 ordering note and in the PR description, not here: that decision is
   about disk-migration risk, orthogonal to which DNS-01 provider Caddy uses.
+
+## Amendment (2026-11-09, #285) — this design requires exactly one identity on the VM
+
+**The decision above depends on a precondition this ADR did not state.** With
+`tenant_id`/`client_id`/`client_secret` empty, `libdns/azure` v0.5.0 calls
+`azidentity.NewManagedIdentityCredential(nil)`, which names no client id and never reads
+`AZURE_CLIENT_ID`. IMDS answers that request only when the VM carries one user-assigned identity.
+`#100` attached a second and pinned `AZURE_CLIENT_ID` in Caddy's environment, which the plugin ignores,
+so certificate renewal failed from the first attempt on 2026-11-09 while Caddy went on serving its
+existing certificate. Setting `client_id` in the Caddyfile is not a fix: it selects
+`NewClientSecretCredential`.
+
+`#285` restores the precondition: `homelab-edge-dns-identity` is the only user-assigned identity on
+the edge VM, and it also holds restic's grant on the `restic` container. Its grants are no longer
+limited to DNS, and the cost of that is recorded in ADR-0009 §6a's 2026-11-09 amendment. `#286` tracks
+forking the plugin so the identities can be split again. Everything else in this ADR stands, including
+"no credential of any kind lives on the VM".
 
 ## Open items
 

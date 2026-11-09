@@ -106,7 +106,7 @@ variable "backup_storage_account_name" {
 }
 
 variable "restic_container_name" {
-  description = "The container the backup identity gets Storage Blob Data Contributor over — never the account, even though that account holds nothing else"
+  description = "The container the edge identity gets Storage Blob Data Contributor over — never the account, even though that account holds nothing else"
   type        = string
   default     = "restic"
 }

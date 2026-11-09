@@ -27,16 +27,14 @@ There is deliberately **no `deploy-identity.yml`**. The five module workflows st
 | ↳ Role **definition** (custom) | `Homelab Persist Disk Writer`, scoped to `homelab-persist-rg` |
 | ↳ Role assignment | `Homelab Persist Disk Writer` on `homelab-persist-rg` |
 | ↳ Role assignment | `Managed Identity Operator` on `homelab-edge-dns-identity` |
-| ↳ Role assignment | `Managed Identity Operator` on `homelab-backup-identity` |
-| **Caddy's DNS-01 identity** (UAMI, E03.3 #39) | `homelab-edge-dns-identity` |
+| **The edge VM's identity** (UAMI, E03.3 #39), used by Caddy and restic | `homelab-edge-dns-identity` |
 | ↳ Role assignment | `DNS Zone Contributor` on `az.snehasish-chakraborty.com` |
-| **restic's identity** (UAMI, E15.4 #100) | `homelab-backup-identity` |
-| ↳ Role assignment | `Storage Blob Data Contributor` on the `restic` **container** |
+| ↳ Role assignment | `Storage Blob Data Contributor` on the `restic` **container** (E03.7, #285) |
 | **The human applying this** | whoever runs the apply |
 | ↳ Role assignment | `Storage Blob Data Contributor` on the `restic` container (`var.grant_operator_blob_access`) |
 
-Three identities, three separate lists of grants — `granted_scopes`, `edge_granted_scopes` and
-`backup_granted_scopes` — which must never be diffed against each other as if they were one.
+Two managed identities, two separate lists of grants — `granted_scopes` and `edge_granted_scopes` —
+which must never be diffed against each other as if they were one.
 
 The operator grant exists because **subscription Owner is a control-plane role and confers no blob
 data access**: without it, `restic` and `az storage blob` both fail from a laptop with
@@ -268,27 +266,23 @@ az role assignment list --assignee <principal_id> --all \
   --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
 
-Exactly **six** rows since E15.4 (#100), matching `terraform output granted_scopes`. **Nothing at
+Exactly **five** rows since E03.7 (#285), matching `terraform output granted_scopes`. **Nothing at
 subscription scope** — a `/subscriptions/<id>` scope with no resource group after it means something
 granted this identity far more than #34 intends; find out what before going near #35.
 
-Note the two rows that read `Managed Identity Operator`: they are scoped to two *different*
-identities (`homelab-edge-dns-identity` and `homelab-backup-identity`), and each lets `compute/vm`
-attach one of them to the edge VM. That duplication is also why `granted_scopes` is a **list of
-`{role, scope}` objects rather than a map** since #100 — as a map keyed by role name, two identical
-keys failed the plan with "Duplicate object attribute key".
+The `Managed Identity Operator` row is scoped to `homelab-edge-dns-identity` and lets `compute/vm`
+attach it to the edge VM. `granted_scopes` is a **list of `{role, scope}` objects rather than a map**
+since #100, when a second grant of that role made two identical keys and failed the plan with
+"Duplicate object attribute key". #285 removed that grant; the list stays because it matches the
+shape of this command's output.
 
-Then the other two principals, which are separate lists on purpose and must never be diffed against
-the CI identity's as if they were one:
+Then the edge identity, a separate list on purpose that must never be diffed against the CI
+identity's as if they were one:
 
 ```bash
-# Caddy's DNS-01 identity — one row, the zone only
-az role assignment list --assignee "$(terraform -chdir=infra/identity output -raw edge_dns_client_id)" --all \
-  --query "[].{role:roleDefinitionName, scope:scope}" -o table
-
-# restic's identity — one row, and the scope must end in /containers/restic.
+# The edge VM's identity — two rows: the DNS zone, and a scope ending in /containers/restic.
 # A scope ending at .../storageAccounts/homelabpersistbackupsa is the failure this checks for.
-az role assignment list --assignee "$(terraform -chdir=infra/identity output -raw backup_client_id)" --all \
+az role assignment list --assignee "$(terraform -chdir=infra/identity output -raw edge_dns_client_id)" --all \
   --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
 
