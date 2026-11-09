@@ -165,6 +165,10 @@ resource "azurerm_role_assignment" "vm_ssh_key_reader" {
 # VM with no credential on disk anywhere — libdns/azure falls back to managed
 # identity when tenant_id/client_id/client_secret are all left empty.
 #
+# Since E03.7 (#285) it is also the identity restic authenticates as, so the name
+# understates it: renaming would replace it and mint a new client_id for no
+# functional gain, and #286's split would restore the narrow meaning anyway.
+#
 # User-assigned, not system-assigned: compute/vm is cattle (park.yml tears
 # it down every park cycle). A system-assigned identity dies with the VM and
 # mints a new principal_id, breaking the role assignment below on every
@@ -199,6 +203,7 @@ data "azurerm_dns_zone" "homelab" {
 # Caddy's only Azure right: write the ACME DNS-01 TXT challenge into the zone
 # and clean it up after. Scoped to the zone, not homelab-rg — this identity has
 # no reason to touch the VM, the disk, or anything else Contributor would allow.
+# Its one other grant is restic's, edge_restic_blob_contributor below.
 resource "azurerm_role_assignment" "edge_dns_zone_contributor" {
   scope                = data.azurerm_dns_zone.homelab.id
   role_definition_name = "DNS Zone Contributor"
@@ -308,28 +313,10 @@ resource "azurerm_role_assignment" "persist_disk_writer" {
   skip_service_principal_aad_check = true # same replication-lag reason as above
 }
 
-# --- Backup identity (E15.4, #100) ----------------------------------------
+# --- restic repository grants (E15.4 #100, E03.7 #285) --------------------
 #
-# A THIRD UAMI, unrelated to the two above: the identity restic authenticates as
-# from the edge VM, so the internet-facing host holds no credential for the
-# backups it writes. ADR-0009 §6a.
-#
-# User-assigned, not system-assigned, for the same reason as the edge DNS
-# identity: compute/vm is cattle and park.yml tears it down every park cycle,
-# and a system-assigned identity dies with the VM and mints a new principal_id,
-# breaking the role assignment below on every recreate.
-#
-# No prevent_destroy, unlike homelab_github_oidc: nothing outside this module
-# pins this identity's client_id. compute/vm reads it by name and renders it into
-# the VM's restic environment on every apply, so recreating it costs one
-# infra/identity apply plus one compute/vm apply — not a repo-variable update.
-resource "azurerm_user_assigned_identity" "homelab_backup" {
-  name                = var.backup_uami_name
-  location            = azurerm_resource_group.homelab_identity_rg.location
-  resource_group_name = azurerm_resource_group.homelab_identity_rg.name
-
-  tags = merge(local.tags, { purpose = "restic-backup" })
-}
+# Who may read and write the restic container, so the internet-facing host holds
+# no credential for the backups it writes. ADR-0009 §6a.
 
 # Created by infra/backup (local apply, as Owner, no workflow) and read here by
 # name. Safe as a data source here and only here: this module is never run by CI,
@@ -350,7 +337,11 @@ locals {
   restic_container_scope = "${data.azurerm_storage_account.backup.id}/blobServices/default/containers/${var.restic_container_name}"
 }
 
-# restic's only Azure right: read and write blobs in one container.
+# The edge identity's second right (E03.7, #285): restic's read and write on one
+# container. It sits on the DNS identity because the edge VM must carry exactly
+# ONE user-assigned identity: libdns/azure asks IMDS for a token without naming a
+# client id, and IMDS refuses that request when two are attached. The cost is
+# recorded in ADR-0009 §6a's 2026-11-09 amendment.
 #
 # Scoped to the CONTAINER, not the account — and deliberately still so, even
 # though that account now holds nothing else. The scope states what the
@@ -364,24 +355,10 @@ locals {
 # 30-day soft delete on the account (infra/backup); the strong form — a custom
 # data-plane role without .../blobs/delete, plus `forget --prune` moved into a
 # scheduled CI job with its own identity — is an open ADR item, not shipped here.
-resource "azurerm_role_assignment" "backup_restic_blob_contributor" {
+resource "azurerm_role_assignment" "edge_restic_blob_contributor" {
   scope                = local.restic_container_scope
   role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_user_assigned_identity.homelab_backup.principal_id
-
-  skip_service_principal_aad_check = true # same replication-lag reason as above
-}
-
-# Lets the CI identity ATTACH the backup identity to the edge VM in compute/vm,
-# and nothing wider — the second grant of this role, alongside the edge DNS one
-# above. Reader is not enough: attaching a UAMI needs
-# Microsoft.ManagedIdentity/userAssignedIdentities/assign/action, a write, and a
-# Reader grant plans clean in compute/vm then fails at apply with an error
-# naming neither "Reader" nor "assign".
-resource "azurerm_role_assignment" "ci_backup_identity_operator" {
-  scope                = azurerm_user_assigned_identity.homelab_backup.id
-  role_definition_name = "Managed Identity Operator"
-  principal_id         = azurerm_user_assigned_identity.homelab_github_oidc.principal_id
+  principal_id         = azurerm_user_assigned_identity.homelab_edge_dns.principal_id
 
   skip_service_principal_aad_check = true # same replication-lag reason as above
 }

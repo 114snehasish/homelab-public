@@ -108,7 +108,7 @@ variable "dns_rg_name" {
 # gets the same names, and no workflow env var is needed for either.
 
 variable "edge_dns_identity_name" {
-  description = "Name of the user-assigned managed identity (created in infra/identity) that Caddy uses for the Azure DNS-01 challenge — attached only to the instance with public_edge = true"
+  description = "Name of the user-assigned managed identity (created in infra/identity) that Caddy uses for the Azure DNS-01 challenge and restic uses for blob storage — the only identity on the instance with public_edge = true"
   type        = string
   default     = "homelab-edge-dns-identity"
 }
@@ -119,16 +119,10 @@ variable "identity_rg_name" {
   default     = "homelab-identity-rg"
 }
 
-# --- Backup identity and repository (E15.4, #100) -------------------------
-# All three default, like the edge DNS variables above: every fleet built against
-# this repo's infra/identity and infra/backup gets the same names, so no workflow
-# env var is needed for any of them.
-
-variable "backup_identity_name" {
-  description = "Name of the user-assigned managed identity (created in infra/identity) that restic authenticates to blob storage as — attached only to the instance with public_edge = true, alongside the edge DNS identity"
-  type        = string
-  default     = "homelab-backup-identity"
-}
+# --- Backup repository (E15.4, #100) --------------------------------------
+# Both default, like the edge DNS variables above: every fleet built against this
+# repo's infra/backup gets the same names, so no workflow env var is needed for
+# either. restic authenticates as the edge identity above (#285).
 
 # A plain string, never a data "azurerm_storage_account": this module runs in CI,
 # and the CI identity holds Microsoft.Compute/disks/{read,write} in the persist

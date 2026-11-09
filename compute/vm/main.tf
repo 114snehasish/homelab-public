@@ -90,30 +90,14 @@ locals {
   public_edge_instances = [for name, inst in var.instances : name if inst.public_edge]
 }
 
-# Caddy's DNS-01 identity (#39), created once by infra/identity and looked up
-# here by name — the same by-name coupling every cross-module reference in
-# this repo uses (see CLAUDE.md). Keyed off the same 0-or-1 set as the
-# wildcard record above, so it only exists to be attached to the edge node,
-# never fleet-wide.
+# The edge node's one user-assigned identity, used by Caddy's DNS-01 (#39) and by
+# restic (#285), created once by infra/identity and looked up here by name — the
+# same by-name coupling every cross-module reference in this repo uses (see
+# CLAUDE.md). Keyed off the same 0-or-1 set as the wildcard record above, so it
+# only exists to be attached to the edge node, never fleet-wide.
 data "azurerm_user_assigned_identity" "edge_dns" {
   for_each            = toset(local.public_edge_instances)
   name                = var.edge_dns_identity_name
-  resource_group_name = var.identity_rg_name
-}
-
-# restic's identity (#100), created once by infra/identity and looked up here by
-# name — same by-name coupling as the edge DNS identity above, and keyed off the
-# same 0-or-1 set, so it only ever exists to be attached to the edge node.
-#
-# The edge node therefore carries TWO user-assigned identities, which is a
-# behaviour change and not just an addition: managed-identity auto-selection is
-# unambiguous only while there is exactly one. Both consumers now pin
-# AZURE_CLIENT_ID — Caddy in its own environment file, restic in the one
-# cloud-init.tf renders. See ADR-0013 and CLAUDE.md; the failure mode if either
-# pin is dropped is a certificate that silently does not renew, weeks later.
-data "azurerm_user_assigned_identity" "backup" {
-  for_each            = toset(local.public_edge_instances)
-  name                = var.backup_identity_name
   resource_group_name = var.identity_rg_name
 }
 
@@ -175,8 +159,8 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
   # The posture change, stated rather than discovered (roadmap R23): the CI
   # identity can now run commands as root inside a running node. That is no new
   # *reach* — Contributor on homelab-rg, disks/write in the persist RG and
-  # Managed Identity Operator over both identities already let CI build a VM
-  # holding the pet disk and both identities — but it removes the friction of
+  # Managed Identity Operator over the edge identity already let CI build a VM
+  # holding the pet disk and that identity — but it removes the friction of
   # doing so. This module itself installs no extension.
   allow_extension_operations = true
 
@@ -186,14 +170,17 @@ resource "azurerm_linux_virtual_machine" "homelab_vm" {
   # extensions are separate mechanisms, verified live against this VM before
   # writing this block (a container on the `web` bridge network reached
   # http://169.254.169.254/metadata/instance with no extension involved).
+  #
+  # EXACTLY ONE identity (#285). caddy-dns/azure v0.6.0 uses libdns/azure v0.5.0,
+  # which calls NewManagedIdentityCredential(nil): it names no client id and never
+  # reads AZURE_CLIENT_ID. IMDS refuses that request when two user-assigned
+  # identities are attached, so a second entry here stops certificate renewal
+  # while Caddy keeps serving the old certificate until it expires.
   dynamic "identity" {
     for_each = each.value.public_edge ? [1] : []
     content {
-      type = "UserAssigned"
-      identity_ids = [
-        data.azurerm_user_assigned_identity.edge_dns[each.key].id,
-        data.azurerm_user_assigned_identity.backup[each.key].id,
-      ]
+      type         = "UserAssigned"
+      identity_ids = [data.azurerm_user_assigned_identity.edge_dns[each.key].id]
     }
   }
 

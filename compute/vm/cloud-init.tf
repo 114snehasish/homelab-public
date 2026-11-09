@@ -63,9 +63,9 @@ locals {
   # every VM.
   #
   # Shipped ONLY to the node with public_edge = true, because only that node
-  # carries the backup identity infra/identity created and compute/vm attaches. A
-  # private-tier node getting these files would get timers that cannot
-  # authenticate — a nightly failure with no way to succeed.
+  # carries the identity holding the restic grant. A private-tier node getting
+  # these files would get timers that cannot authenticate — a nightly failure
+  # with no way to succeed.
   restic_files = {
     "/usr/local/sbin/restic-backup"                     = { source = "backup/restic-backup.sh", mode = "0755" }
     "/usr/local/sbin/restic-check"                      = { source = "backup/restic-check.sh", mode = "0755" }
@@ -88,24 +88,23 @@ locals {
   # read the VM resource.
   #
   # 0640 root:root rather than 0644: nothing on this box needs to read it but
-  # root, and AZURE_CLIENT_ID selecting an identity is not something an
-  # unprivileged process should be able to enumerate.
+  # root, and the identity's client id is not something an unprivileged process
+  # needs to enumerate.
   restic_env = {
     for name in local.public_edge_instances : name => <<-EOT
       # Rendered by compute/vm/cloud-init.tf (#100). Sourced by
       # /usr/local/sbin/restic-backup and /usr/local/sbin/restic-check, so a
       # manual run and the systemd timer see exactly the same environment.
       #
-      # AZURE_CLIENT_ID is load-bearing: this node carries TWO user-assigned
-      # managed identities (Caddy's DNS-01 identity and this one), which makes an
-      # unpinned managed-identity token request ambiguous. It is exported into the
-      # restic process only — system-wide it would leak into Caddy's container and
-      # select the wrong identity there.
+      # AZURE_CLIENT_ID is this node's one user-assigned identity (#285), which
+      # also serves Caddy's DNS-01. Only restic reads it, and both scripts require
+      # it. Caddy's plugin cannot use a client id, so a second identity on this
+      # node would stop certificate renewal whatever this file says.
       #
       # There is no account key and no SAS: homelabpersistbackupsa sets
       # shared_access_key_enabled = false, so Entra is the only way in.
       AZURE_ACCOUNT_NAME=${var.backup_storage_account_name}
-      AZURE_CLIENT_ID=${data.azurerm_user_assigned_identity.backup[name].client_id}
+      AZURE_CLIENT_ID=${data.azurerm_user_assigned_identity.edge_dns[name].client_id}
       RESTIC_REPOSITORY=azure:${var.restic_container_name}:/
       RESTIC_PASSWORD_FILE=/data/.restic-password
       # On the pet disk on purpose: the OS disk is destroyed on every park, so a

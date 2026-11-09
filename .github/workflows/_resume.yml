@@ -14,9 +14,9 @@ name: Resume (reusable)
 # The resume contract it checks, per node (scripts/lifecycle/node-health.sh, via
 # Run Command): cloud-init done -> homelab-persist.target active (guard passed) ->
 # /data was cleanly unmounted at park -> Docker up -> every restart-policy
-# container running and staying up -> Caddy loaded its certificate rather than
-# ordering one. Then, from the runner, the edge answers HTTPS with the wildcard
-# certificate and nothing more specific (R6).
+# container running and staying up -> Caddy placed no fresh ACME order and has no
+# unresolved renewal failure. Then, from the runner, the edge answers HTTPS with
+# the wildcard certificate and nothing more specific (R6).
 #
 # Apps need no redeploy step here, by design: Docker's storage is on /data (#99)
 # and since #101 so are the compose files, Caddyfile and .env (/data/apps), so
