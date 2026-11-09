@@ -34,12 +34,12 @@ output "identity_rg_name" {
 # quietly failed at the one job this output exists to do.
 #
 # A LIST OF OBJECTS, NOT A MAP, since E15.4 (#100). It was a map keyed by role
-# name until the backup identity arrived with a SECOND `Managed Identity
-# Operator` grant — two identical keys, which fails the plan outright with
-# "Duplicate object attribute key". Disambiguating the keys was the other option
-# and was rejected: the strings would then stop matching what `az role assignment
-# list` prints, which is the one job this output has. A list also matches the
-# shape of the thing it is diffed against.
+# name until a SECOND `Managed Identity Operator` grant (removed again by #285)
+# made two identical keys, which fails the plan outright with "Duplicate object
+# attribute key". Disambiguating the keys was the other option and was rejected:
+# the strings would then stop matching what `az role assignment list` prints,
+# which is the one job this output has. A list also matches the shape of the
+# thing it is diffed against, which is why it stays one.
 #
 # One row's role name comes from the role *definition* rather than the
 # assignment, because E15.0's grant uses role_definition_id and so sets no
@@ -48,13 +48,12 @@ output "identity_rg_name" {
 # value renders this entire output as "(known after apply)", hiding every other
 # row in exactly the plan you want to read them in.
 output "granted_scopes" {
-  description = "Role assignments held by the CI identity, as a list of {role, scope} — six of them since E15.4"
+  description = "Role assignments held by the CI identity, as a list of {role, scope} — five of them since E03.7"
   value = [
     { role = azurerm_role_assignment.homelab_rg_contributor.role_definition_name, scope = azurerm_role_assignment.homelab_rg_contributor.scope },
     { role = azurerm_role_assignment.tfstate_blob_contributor.role_definition_name, scope = azurerm_role_assignment.tfstate_blob_contributor.scope },
     { role = azurerm_role_assignment.vm_ssh_key_reader.role_definition_name, scope = azurerm_role_assignment.vm_ssh_key_reader.scope },
     { role = azurerm_role_assignment.ci_edge_identity_operator.role_definition_name, scope = azurerm_role_assignment.ci_edge_identity_operator.scope },
-    { role = azurerm_role_assignment.ci_backup_identity_operator.role_definition_name, scope = azurerm_role_assignment.ci_backup_identity_operator.scope },
     { role = azurerm_role_definition.persist_disk_writer.name, scope = azurerm_role_assignment.persist_disk_writer.scope },
   ]
 }
@@ -81,38 +80,15 @@ output "edge_dns_uami_id" {
 # Same purpose as granted_scopes above, kept separate: that output documents
 # the CI identity specifically, this one documents the edge identity Caddy and
 # restic run as — the two must never be diffed against each other as if one list.
+#
+# The human operator's grant on the restic container is deliberately NOT in here:
+# that is a different principal with a different lifetime, and folding it in would
+# put a spurious row in a diff against `az role assignment list --assignee <edge
+# principal>` — the exact failure mode granted_scopes had before #205.
 output "edge_granted_scopes" {
   description = "Role assignments held by the edge VM's identity, as role name => scope"
   value = {
     (azurerm_role_assignment.edge_dns_zone_contributor.role_definition_name)    = azurerm_role_assignment.edge_dns_zone_contributor.scope
     (azurerm_role_assignment.edge_restic_blob_contributor.role_definition_name) = azurerm_role_assignment.edge_restic_blob_contributor.scope
   }
-}
-
-# --- Backup identity outputs (E15.4, #100) --------------------------------
-
-output "backup_client_id" {
-  description = "Client ID of the restic backup identity — AZURE_CLIENT_ID in /etc/homelab/restic.env on the edge VM. Not a secret: an identifier, exactly like the ones already in Caddy's environment file"
-  value       = azurerm_user_assigned_identity.homelab_backup.client_id
-}
-
-output "backup_uami_id" {
-  description = "Full resource ID of the backup identity — the second entry in compute/vm's identity_ids on the edge node"
-  value       = azurerm_user_assigned_identity.homelab_backup.id
-}
-
-# Same purpose as granted_scopes and edge_granted_scopes, kept separate for the
-# same reason: three principals, three lists, never diffed against each other as
-# if they were one.
-#
-# The operator grant is deliberately NOT in here. This output documents what the
-# backup identity holds; the human who applied the module is a different
-# principal with a different lifetime, and folding it in would make a clean diff
-# against `az role assignment list --assignee <backup principal>` show a
-# spurious row — the exact failure mode granted_scopes had before #205.
-output "backup_granted_scopes" {
-  description = "Role assignments held by the restic backup identity, as a list of {role, scope}"
-  value = [
-    { role = azurerm_role_assignment.backup_restic_blob_contributor.role_definition_name, scope = azurerm_role_assignment.backup_restic_blob_contributor.scope },
-  ]
 }

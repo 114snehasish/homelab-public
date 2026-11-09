@@ -91,7 +91,7 @@ variable "persist_disk_role_name" {
   default     = "Homelab Persist Disk Writer"
 }
 
-# --- Backup identity inputs (E15.4, #100) ---------------------------------
+# --- Backup repository inputs (E15.4, #100) -------------------------------
 # The account and its container are created by infra/backup, a separate
 # local-apply module, and read here by name — the same by-name coupling every
 # cross-module reference in this repo uses. Applying infra/backup is therefore a
@@ -109,12 +109,6 @@ variable "restic_container_name" {
   description = "The container the edge identity gets Storage Blob Data Contributor over — never the account, even though that account holds nothing else"
   type        = string
   default     = "restic"
-}
-
-variable "backup_uami_name" {
-  description = "Name of the user-assigned managed identity restic authenticates as from the edge VM"
-  type        = string
-  default     = "homelab-backup-identity"
 }
 
 # Subscription Owner is a CONTROL-plane role and confers no blob data access, so
