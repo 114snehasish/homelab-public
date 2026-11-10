@@ -170,8 +170,15 @@ PY
 say "snapshot ${SNAPSHOT_ID} saved"
 
 # --- Retention -----------------------------------------------------------------
+# --group-by includes tags so park's `final` snapshots are a retention group of
+# their own. restic's default groups by host and path only, so a nightly later
+# the same UTC day used to keep only the newest snapshot and forget the park's:
+# observed 2026-11-09, when a manual nightly removed final snapshot 843f581e.
+# Grouping (rather than --keep-tag final, which keeps every one forever) gives
+# the parks the same bounded daily/weekly/monthly policy as the nightlies.
 if [[ "$MODE" == "nightly" ]]; then
   restic forget \
+    --group-by host,paths,tags \
     --keep-daily "$KEEP_DAILY" \
     --keep-weekly "$KEEP_WEEKLY" \
     --keep-monthly "$KEEP_MONTHLY" \
