@@ -64,13 +64,26 @@ else
   ok "persist: /data was cleanly unmounted (no journal replay)"
 fi
 
-# 4. Docker, behind the target.
-if ! systemctl is-active --quiet docker.service; then
-  bad "docker: docker.service is not active"
+# 4. Docker, behind the target. cloud-init starts it with --no-block, because it
+#    must wait for homelab-persist.target, so `cloud-init status --wait` can
+#    return while Docker is still starting: the first real resume (2026-11-09) ran
+#    this check before Docker came up and failed a healthy node. So wait while a
+#    start job is queued or the unit is activating; any other state is final.
+DOCKER_TIMEOUT=300
+waited=0
+docker_state="$(systemctl is-active docker.service)"
+while [[ "$waited" -lt "$DOCKER_TIMEOUT" ]] &&
+  { [[ "$docker_state" == "activating" ]] || [[ -n "$(systemctl list-jobs --no-legend docker.service 2>/dev/null)" ]]; }; do
+  sleep 5
+  waited=$((waited + 5))
+  docker_state="$(systemctl is-active docker.service)"
+done
+if [[ "$docker_state" != "active" ]]; then
+  bad "docker: docker.service is ${docker_state} after waiting ${waited}s — journalctl -b -u docker.service"
   printf 'summary: %d fatal\n' "$fatal_count"
   exit 1
 fi
-ok "docker: active"
+ok "docker: active (waited ${waited}s)"
 
 # 5. Every container that should be running is running — and is still the same
 #    process ${SETTLE_SECONDS}s later. A restart loop (the 2026-10-06 Caddy
@@ -107,12 +120,16 @@ fi
 #    - A renewal failing (#285). On 2026-11-09 this check said OK while Caddy had
 #      failed 6 renewals and succeeded at none. Only the latest outcome counts, so
 #      a failed attempt that a later renewal recovered from still passes.
+#    The window opens when Docker started, not at `uptime -s`: Azure boots the
+#    image well before the VM resource exists (about 55 min on 2026-11-09), and
+#    the container's log lives on /data with the container, so a boot-time window
+#    after a short park can include the previous VM's lines.
 if docker inspect caddy >/dev/null 2>&1; then
-  boot_epoch="$(date -d "$(uptime -s)" +%s)"
-  caddy_log="$(docker logs --since "$boot_epoch" caddy 2>&1)"
+  docker_since="$(date -d "$(systemctl show -p ActiveEnterTimestamp --value docker.service)" +%s)"
+  caddy_log="$(docker logs --since "$docker_since" caddy 2>&1)"
   caddy_fatals="$fatal_count"
   if grep -qE 'obtaining certificate|certificate obtained successfully' <<<"$caddy_log"; then
-    bad "caddy: ordered a certificate since boot — the ACME store on /data/caddy did not survive"
+    bad "caddy: ordered a certificate since Docker started — the ACME store on /data/caddy did not survive"
   fi
   last_failure="$(grep -n 'could not get certificate from issuer' <<<"$caddy_log" | tail -n 1 | cut -d: -f1)"
   last_renewal="$(grep -n 'certificate renewed successfully' <<<"$caddy_log" | tail -n 1 | cut -d: -f1)"
@@ -120,7 +137,7 @@ if docker inspect caddy >/dev/null 2>&1; then
     bad "caddy: certificate renewal is failing, with no successful renewal after the last failure — docker logs caddy | grep 'could not get certificate'"
   fi
   if [[ "$fatal_count" -eq "$caddy_fatals" ]]; then
-    ok "caddy: no ACME order and no unresolved renewal failure since boot"
+    ok "caddy: no ACME order and no unresolved renewal failure since Docker started"
   fi
 fi
 

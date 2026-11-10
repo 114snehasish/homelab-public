@@ -211,6 +211,13 @@ The rule is *exclude what is reproducible or circular, never what is merely larg
 
 `--keep-daily 7 --keep-weekly 4 --keep-monthly 6`, with `forget --prune` every night.
 
+**Grouped by host, path *and tag*** (`--group-by host,paths,tags`), so the policy applies separately
+to `nightly` and `final` snapshots. restic's default groups by host and path only. Under it a
+nightly later the same UTC day kept only the newest snapshot and forgot the park's: on 2026-11-09
+a manual nightly removed final snapshot `843f581e`, whose blobs then survived only as previous blob
+versions. `--keep-tag final` was rejected because it keeps every park's snapshot forever. Grouping
+gives parks the same bounded policy as the nightlies.
+
 Nightly prune is only safe because the container is **Hot** (ADR-0009 §6b). On Cool, the 30-day
 minimum retention would charge a prorated early-deletion penalty on nearly every pack a prune
 deletes — the architecture review's "decouple prune to monthly" advice applies to that case and not
