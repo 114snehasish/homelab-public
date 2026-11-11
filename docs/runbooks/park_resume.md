@@ -40,6 +40,14 @@ Park whenever the lab will sit idle for more than a couple of hours.
 Avoid dispatching a park in the nightly backup window (02:30–02:45 UTC). It is safe, since
 `park-backup.sh` waits for an in-flight nightly instead of racing its lock, but the park takes longer.
 
+**A nightly missed while parked is not caught up after resume.** The timer is `Persistent=true`,
+but systemd keeps that last-run record on the OS disk, which park destroys. A resumed VM therefore
+has no record and simply waits for the next 02:30 UTC. Both resumes on 2026-11-10/11 came up after
+02:30 and showed `LAST -` with no catch-up run. Nothing is lost by this, since the park's final
+snapshot covers the parked period. If you need a nightly sooner, run it by hand:
+`sudo /usr/local/sbin/restic-backup nightly`. To have the timer run the next one, resume before
+about 02:15 UTC.
+
 ## Park
 
 ```bash
