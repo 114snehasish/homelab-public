@@ -86,9 +86,10 @@ fi
 ok "docker: active (waited ${waited}s)"
 
 # 5. Every container that should be running is running — and is still the same
-#    process ${SETTLE_SECONDS}s later. A restart loop (the 2026-10-06 Caddy
-#    failure: a bind source that no longer existed) looks "running" at any
-#    single instant; a changed StartedAt gives it away.
+#    process ${SETTLE_SECONDS}s later. A container that failed to start shows up
+#    as not running (the 2026-10-06 Caddy failure: a bind source that no longer
+#    existed, exit 127 once, RestartCount 0). A restart loop looks "running" at
+#    any single instant; a changed StartedAt gives it away.
 snapshot() {
   docker ps -a --format '{{.Names}}' | while read -r name; do
     docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}} {{.State.Status}} {{.State.StartedAt}}' "$name"

@@ -354,8 +354,8 @@ jobs:
             fi
             echo
             echo "- Scope: **fleet-wide** — every node in compute/vm (per-node park is #167). The NS delegation, DNS zone, network, disks and backups all stay."
-            echo "- Expected parked run-rate: **≈ ₹277/mo** (ADR-0009 §8, computed from retail prices; #102 measures it)."
-            echo "- Full parked-set check (owner): \`az resource list --query \"[].{rg:resourceGroup, type:type, name:name}\" -o table\`"
+            echo "- Expected parked run-rate: **≈ ₹275/mo** (measured by #102 over 31 parked days; ADR-0009 §8)."
+            echo "- Full parked-set check (owner): \`az resource list --query \"sort_by([], &resourceGroup)[].[resourceGroup, type, name]\" -o tsv\` — see docs/runbooks/park_resume.md"
           } >>"$s"
 
           exit "$fail"

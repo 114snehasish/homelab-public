@@ -187,8 +187,9 @@ failure since boot).
 ## One-time migration from `~/apps` (#101)
 
 A node deployed before `#101` has a Caddy container whose bind sources point at
-`/home/azureuser/apps/caddy`. On the first resume after `#101` that container restart-loops (exit
-127) and `resume.yml`'s health check fails — expected, once. Migrate:
+`/home/azureuser/apps/caddy`. On the first resume after `#101` that container fails to start (it
+exited 127 once, with `RestartCount` 0, and stayed `exited` — not a restart loop) and `resume.yml`'s
+health check fails — expected, once. Migrate:
 
 ```bash
 ssh azureuser@<public_ip> 'docker rm -f caddy && sudo rm -rf /home/azureuser/apps'   # /data/caddy is untouched

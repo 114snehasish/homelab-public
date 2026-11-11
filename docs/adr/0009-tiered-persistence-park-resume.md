@@ -1,6 +1,6 @@
 # ADR-0009: Tiered persistence and the park/resume lifecycle
 
-- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built). **Amended again 2026-09-28 ([#100](https://github.com/114snehasish/homelab/issues/100)): §1, §2, §6a, §6c, §8 and Consequences — the 2026-09-12 (#205) amendment is *reversed* for the storage account. A dedicated backup account `homelabpersistbackupsa` is created in `homelab-persist-rg` by a new local-apply module `infra/backup`; `do-not-delete` and `listeninfratfstatesa` are not touched at all, and §6c is therefore met in full.** See [§2's third amendment block](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg). **Amended again 2026-10-13 ([#101](https://github.com/114snehasish/homelab/issues/101)): §4 and §5 — park is backup → graceful stop → deallocate → destroy, the apps layer moved to `/data/apps`, `destroy.yml` became park plus the Cloudflare leg, and CI reaches nodes through Azure Run Command (new risk R23).** See [§5's amendment block](#amendment-2026-10-13-101--park-and-resume-as-workflows).
+- **Status**: Accepted — the parked-cost table in section 8 is computed from published retail prices and is superseded by the measured figure [#102](https://github.com/114snehasish/homelab/issues/102) records. **Amended 2026-09-12 ([#205](https://github.com/114snehasish/homelab/issues/205)): §1, §2, §6a, §6c and §8 — there is no separate backup storage account; the `restic` container lives in the existing state storage account `listeninfratfstatesa`, and the out-of-band script creates only the resource group.** See [§2's amendment block](#amendment-2026-09-12-205--no-separate-backup-storage-account). **Amended again 2026-09-12 ([#98](https://github.com/114snehasish/homelab/issues/98)): §2 and §3 — the migration was an `az resource move`, not a snapshot-swap, and ran with the lab parked.** See [§2's second amendment block](#amendment-2026-09-12-98--the-migration-was-a-resource-group-move-not-a-snapshot-swap). **Amended again 2026-09-13 ([#99](https://github.com/114snehasish/homelab/issues/99)): §3, §4, §7 and Consequences — the mount contract as built, both Docker storage roots on `/data`, and the park restart-policy trap.** See [§3's amendment block](#amendment-2026-09-13-99--the-contract-as-built). **Amended again 2026-09-28 ([#100](https://github.com/114snehasish/homelab/issues/100)): §1, §2, §6a, §6c, §8 and Consequences — the 2026-09-12 (#205) amendment is *reversed* for the storage account. A dedicated backup account `homelabpersistbackupsa` is created in `homelab-persist-rg` by a new local-apply module `infra/backup`; `do-not-delete` and `listeninfratfstatesa` are not touched at all, and §6c is therefore met in full.** See [§2's third amendment block](#amendment-2026-09-28-100--the-dedicated-backup-account-returns-in-the-persist-rg). **Amended again 2026-10-13 ([#101](https://github.com/114snehasish/homelab/issues/101)): §4 and §5 — park is backup → graceful stop → deallocate → destroy, the apps layer moved to `/data/apps`, `destroy.yml` became park plus the Cloudflare leg, and CI reaches nodes through Azure Run Command (new risk R23).** See [§5's amendment block](#amendment-2026-10-13-101--park-and-resume-as-workflows). **Amended again 2026-11-10 ([#102](https://github.com/114snehasish/homelab/issues/102)): §5 — why park keeps the data disk rather than restoring from T2, and the per-node disk cost that leaves open at fleet scale.** See [§5's second amendment block](#amendment-2026-11-10-102--why-park-keeps-the-disk-and-the-fleet-cost-it-leaves-open). **Amended again 2026-11-11 ([#102](https://github.com/114snehasish/homelab/issues/102)): §8 — the parked cost is measured at ≈ ₹275/mo over 31 parked days and supersedes the computed table.** See [§8's amendment block](#amendment-2026-11-11-102--measured-and-it-supersedes-the-table-above).
 - **Date**: 2026-09-08
 - **Deciders**: repo owner
 - **Related**: [#96](https://github.com/114snehasish/homelab/issues/96) (E15, parent) · [#97](https://github.com/114snehasish/homelab/issues/97) (this ADR) · [#205](https://github.com/114snehasish/homelab/issues/205) · [#98](https://github.com/114snehasish/homelab/issues/98) · [#99](https://github.com/114snehasish/homelab/issues/99) · [#100](https://github.com/114snehasish/homelab/issues/100) · [#101](https://github.com/114snehasish/homelab/issues/101) · [#102](https://github.com/114snehasish/homelab/issues/102) · [#206](https://github.com/114snehasish/homelab/issues/206) · [#207](https://github.com/114snehasish/homelab/issues/207) · [#103](https://github.com/114snehasish/homelab/issues/103) · [ADR-0012](0012-workload-tiering-cidr-and-nsg-ownership.md) · [ADR-0013](0013-caddy-edge-dns01-provider-and-credential-model.md) · [#20](https://github.com/114snehasish/homelab/issues/20) (E07) · [#164](https://github.com/114snehasish/homelab/issues/164) · [#165](https://github.com/114snehasish/homelab/issues/165) · [#54](https://github.com/114snehasish/homelab/issues/54) (E06) · [#124](https://github.com/114snehasish/homelab/issues/124)
@@ -466,7 +466,8 @@ destroy.yml ─┘   (+ infra/cloudflare leg)          deploy.yml ─┘   (netw
    rather than replaying a journal.
 3. **The apps layer moved to `/data/apps/<app>`.** §4's Docker row already predicted it: bind sources
    on the OS disk did not survive, and on 2026-10-06 Docker recreated Caddy's missing `Caddyfile` as a
-   root-owned directory and the container restart-looped. With compose files, `Caddyfile` and `.env` on
+   root-owned directory and the container failed to start (exit 127 once, `RestartCount` 0, left
+   `exited` — this said "restart-looped" until #102 checked). With compose files, `Caddyfile` and `.env` on
    the pet disk, a resume needs **no app redeploy step** — the boot contract `#99` already built
    restarts everything. No boot-time `compose up` unit was added; a restored disk (`#206`) has no
    Docker state (restic excludes it) and is where such a unit would earn its place.
@@ -509,6 +510,46 @@ call `#100` made; GitHub's own failed-run notification and the job summaries cov
 workflow. The subscription-wide "only the parked set remains" check — CI deliberately cannot list the
 subscription, so `_park.yml` asserts what it can see (no VM, NIC, public IP, OS disk or A record left
 in `homelab-rg`; data disks `Unattached`) and `#102`'s drill records the full check.
+
+#### Amendment (2026-11-10, #102) — why park keeps the disk, and the fleet cost it leaves open
+
+**This section said park destroys `compute/vm` only, but never recorded the obvious alternative: a
+final backup makes T2 complete at park time, so why not delete the disk too and restore it on
+resume?** The question came up during `#102`'s drill, and the answer belongs here rather than in
+someone's memory. The disk stays, for five reasons:
+
+1. **T2 is the second copy, not a substitute for T1.** With the disk kept, a parked lab holds two
+   independent copies of `/data`. Deleting it leaves the restic repository as the only one — LRS,
+   same region, and unreadable if its password is lost (R13).
+2. **Restore-from-blob is unproven.** [#206](https://github.com/114snehasish/homelab/issues/206) has
+   not run. Resume today is a re-attach with RPO 0; deleting the disk would make the one path never
+   exercised the path every resume takes.
+3. **T2 does not hold what a resume needs.** restic excludes `/data/docker` and `/data/containerd`, so
+   a restored disk has no images and no containers, and nothing starts them — the 2026-10-13
+   amendment above deliberately added no boot-time `compose up`.
+4. **A restored disk fails the data-guard on purpose** (§3): its filesystem UUID is new, so Docker
+   stays down until a human re-blesses the marker. Every resume would need that manual step.
+5. **CI cannot delete a disk, by design** (§2: the custom role omits `disks/delete`). Deleting disks
+   on park means handing CI the one right §2 exists to withhold.
+
+**What this leaves open is fleet scale, and it is not small.** §8 prices **one** disk at ₹204/mo
+(≈ ₹6.8/day). [#165](https://github.com/114snehasish/homelab/issues/165) (E17.6) gives *every*
+`fleet.tfvars` entry its own disk, so ten nodes would park at ≈ ₹2,040/mo in disks alone — five
+times the ≤ ₹400 target, before any other line. The levers, in the order they should be considered:
+
+- **Not every node needs a pet disk.** A node with no state of its own — a k3s worker whose cluster
+  state Argo CD rebuilds from git (§4) — is cattle all the way down. `#165` should make the disk
+  per-node opt-in rather than one per entry.
+- **Right-size the disk.** The edge disk holds ~2.3 GB of a 20 GiB disk billed at 32 GiB (§7); each
+  smaller tier roughly halves the price. Verify current prices before choosing.
+- **Snapshot-and-delete on park,** only for nodes whose state restic fully covers, and only once
+  `#206` has proven the restore. Incremental snapshots bill on used bytes, so it is cheap — but it
+  meets the `create_option` read-back trap (CLAUDE.md), the re-bless step above, and CI's missing
+  `disks/delete`, so it is a design change, not a flag.
+
+**Decision for now:** the single edge disk stays; ₹204/mo is inside the budget. The per-node
+question is `#165`'s to settle before it merges, and §8's measured figure (`#102`) is per disk so
+it scales honestly.
 
 ### 6. Tier 2 mechanics
 
@@ -740,6 +781,38 @@ This table is computed from published retail prices, not observed spend.
 run-rate confirmed ≤ ₹400 (or the ADR's number corrected to reality)"* — when that measurement
 exists, it supersedes this table and this ADR is edited to match.
 
+#### Amendment (2026-11-11, #102) — measured, and it supersedes the table above
+
+**Measured: ≈ ₹275/mo for today's parked set, inside the ≤ ₹400 target.** Source: Azure Cost
+Analysis, actual billed cost, averaged over **31 consecutive fully parked days, 2026-10-09 to
+2026-11-08**. The daily rate is measured; the monthly figure is that rate × 30.
+
+| Line item | Computed above | Measured ₹/day | Measured ×30 |
+|---|---|---|---|
+| Data disk (billed on the provisioned 32 GiB tier, not the ~2.3 GB used) | ₹204 | 7.48 | **₹224.38** |
+| `homelabpersistbackupsa`, all meters (storage, versions, transactions) | ₹30 | 0.15 | **₹4.35** |
+| Azure DNS zone | ₹43 | 1.55 | **₹46.35** |
+| Terraform state (`listeninfratfstatesa`) | ₹0 | 0.00 | ₹0.03 |
+| `#98`'s rollback snapshot (deleted 2026-11-10) | not counted | 0.08 | ₹2.27 |
+| **Total** | **≈ ₹277** | **9.25** | **₹277.38**; ≈ ₹275 without the snapshot |
+
+**The total agrees to the rupee, and that is a coincidence: two line items are wrong in opposite
+directions.**
+
+- **The fixed lines bill about 10% above the estimate.** The disk ($2.40) and the zone ($0.50)
+  imply about ₹93/USD, not the stated ₹85. Every USD figure in this ADR and in `docs/roadmap.md`
+  converted at ₹85 is low by the same proportion, R19's NAT Gateway (~₹2,800/mo if left up) included.
+- **The backup line is about 7× too high.** It assumed a ~10 GB repository × 1.5. The real
+  repository is small: restic excludes Docker's and containerd's roots, which hold almost all of
+  `/data`'s bytes, and what remains is Caddy's state and the apps layer. §6b's revisit trigger
+  (~100 GB) is nowhere near.
+- **Blob transactions while parked are inside the backup line** and are negligible, as computed.
+  Nothing runs while parked, so nothing writes.
+
+**Headroom is ≈ ₹125**, and the two things that would consume it are recorded elsewhere: R19 (the
+NAT Gateway, `#164`) and the per-node disk at fleet scale (§5's 2026-11-10 amendment, `#165`).
+Procedure, checks and every drill timing: [`docs/runbooks/park_resume.md`](../runbooks/park_resume.md).
+
 ## Consequences
 
 - **Positive.** The disk can no longer be destroyed as collateral: it sits in a resource group no
@@ -789,7 +862,8 @@ exists, it supersedes this table and this ADR is edited to match.
 - [x] ~~Measure the `southindia` → `centralindia` egress~~ — **void.** The 2026-09-28 amendment makes T2 co-regional with T1, so the charge does not arise. [#102](https://github.com/114snehasish/homelab/issues/102) drops this measurement rather than reporting zero.
 - [x] Verify restic against the real storage account with a **user-assigned** managed identity, and pin the restic version, before [#100](https://github.com/114snehasish/homelab/issues/100) ships — verified end-to-end against `homelabpersistbackupsa` on 2026-09-28, with `shared_access_key_enabled = false` so no account-key path existed even as a fallback. Pinned at **0.19.1**. Evidence on #100.
 - [x] ~~Confirm that attaching a second UAMI does not break Caddy's DNS-01, and add `AZURE_CLIENT_ID` to `apps/caddy/.env` in the same change ([#100](https://github.com/114snehasish/homelab/issues/100), §6a)~~ — **this was ticked wrongly.** `#100` proved Caddy could load a certificate, not renew one, and the second UAMI did break renewal. Resolved by [#285](https://github.com/114snehasish/homelab/issues/285): the edge VM carries one identity and the pin is gone (§6a, 2026-11-09 amendment).
-- [ ] Replace §8's computed table with the figure measured in [#102](https://github.com/114snehasish/homelab/issues/102), or correct the design if reality disagrees.
+- [x] Replace §8's computed table with the figure measured in [#102](https://github.com/114snehasish/homelab/issues/102), or correct the design if reality disagrees — **measured ≈ ₹275/mo over 31 parked days** (§8, 2026-11-11 amendment). The design stands; two line items and the exchange rate were corrected.
+- [ ] Decide per node whether a fleet entry gets a pet disk, before [#165](https://github.com/114snehasish/homelab/issues/165) merges — one disk per entry parks ten nodes at ≈ ₹2,040/mo in disks alone (§5, 2026-11-10 amendment).
 - [ ] R22 strong form: custom no-delete data role for the VM + `forget --prune` in a scheduled CI job with its own identity ([#100](https://github.com/114snehasish/homelab/issues/100), §6c). Still open — `#100` shipped the versioning/soft-delete half only.
 - [ ] Restic on every fleet node, not just the public edge — one shared repository with per-host snapshots, staggered `forget --prune` (the exclusive lock collides), and R22 widening to every node. Owned by [#166](https://github.com/114snehasish/homelab/issues/166); until then park aborts on a node without the backup contract (§5, 2026-10-13 amendment).
 - [ ] Park and resume completion notifications, deferred to E08 ([#65](https://github.com/114snehasish/homelab/issues/65)) with the timers' alerting below. The subscription-wide parked-set check is [#102](https://github.com/114snehasish/homelab/issues/102)'s.
