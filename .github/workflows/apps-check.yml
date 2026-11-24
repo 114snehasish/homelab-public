@@ -1,0 +1,210 @@
+name: Apps check
+
+# The first CI that reads anything under apps/ (E03.4 PR A, #40). Before this,
+# lint.yml filtered on **/*.tf only, so a PR touching only a compose file or the
+# Caddyfile got no check at all.
+#
+# Three jobs:
+#   discover  lists apps/*/ that hold a docker-compose.yml. A new app is picked
+#             up here with no edit to this file.
+#   apps      one matrix leg per app: compose config, image build (only if the
+#             app has a Dockerfile), the house rules
+#             (scripts/ci/check-app-conventions.sh), then the app's own
+#             apps/<app>/check.sh hook if it has one.
+#   edge      the router, not "an app": caddy validate, R6
+#             (scripts/ci/check-caddy-r6.sh) and the cross-app route check
+#             (scripts/ci/check-edge-routes.sh). R6 lives only here on purpose:
+#             the Caddyfile alone decides which certificates are requested, so
+#             no other app can leak a hostname into a CT log.
+#
+# What a green run proves, and nothing more: every compose file parses and
+# follows the house rules, every image builds, Caddy accepts its config, the
+# wildcard is the only certificate subject, and every app has a route and every
+# route has an app. It does NOT prove the stack works on the node: nothing here
+# talks to Azure, IMDS or ACME. That is the post-deploy edge check (PR C) and
+# resume's verify.
+#
+# No Azure login and no secrets, so it also runs green on Dependabot PRs. That
+# makes it the meaningful check for the docker ecosystem bumps.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/apps-check.yml'
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/apps-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apps-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: Discover apps
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.list.outputs.apps }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: List apps/*/docker-compose.yml
+        id: list
+        run: |
+          set -euo pipefail
+          apps="$(
+            for f in apps/*/docker-compose.yml; do
+              if [ -f "$f" ]; then basename "$(dirname "$f")"; fi
+            done | jq -Rnc '[inputs]'
+          )"
+          if [ "$apps" = "[]" ]; then
+            echo "::error::no apps/*/docker-compose.yml found"
+            exit 1
+          fi
+          echo "apps=$apps" >>"$GITHUB_OUTPUT"
+          echo "Apps: $apps"
+
+  apps:
+    name: App (${{ matrix.app }})
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.discover.outputs.apps) }}
+    env:
+      APP: ${{ matrix.app }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # `env_file: .env` makes `config` fail on a missing file, and .env is
+      # never committed, so the app is checked against its committed template.
+      - name: Compose config
+        run: |
+          set -euo pipefail
+          d="apps/$APP"
+          if [ -f "$d/.env.example" ] && [ ! -f "$d/.env" ]; then
+            cp "$d/.env.example" "$d/.env"
+          fi
+          docker compose -f "$d/docker-compose.yml" config -q
+          echo "ok: $d/docker-compose.yml"
+
+      - name: Has a Dockerfile?
+        id: df
+        run: |
+          if [ -f "apps/$APP/Dockerfile" ]; then
+            { echo "present=true"; echo "image=homelab-$APP:ci"; } >>"$GITHUB_OUTPUT"
+          else
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "No Dockerfile: this app pulls a published image, nothing to build."
+          fi
+
+      - name: Set up Buildx
+        if: steps.df.outputs.present == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # The cache is per app. For Caddy it also feeds the edge job's build, so
+      # xcaddy compiles at most once per run.
+      - name: Build image
+        if: steps.df.outputs.present == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/${{ matrix.app }}
+          load: true
+          push: false
+          tags: ${{ steps.df.outputs.image }}
+          cache-from: type=gha,scope=app-${{ matrix.app }}
+          cache-to: type=gha,scope=app-${{ matrix.app }},mode=max
+
+      - name: House rules
+        run: scripts/ci/check-app-conventions.sh "apps/$APP"
+
+      # Per-app config linting goes in apps/<app>/check.sh. A hook that exists
+      # but is not executable fails rather than being skipped in silence.
+      - name: Per-app hook (check.sh)
+        env:
+          APP_IMAGE: ${{ steps.df.outputs.image }}
+        run: |
+          hook="apps/$APP/check.sh"
+          if [ ! -e "$hook" ]; then
+            echo "No $hook, nothing to run."
+          elif [ ! -x "$hook" ]; then
+            echo "::error file=$hook::$hook exists but is not executable; run 'git update-index --chmod=+x $hook'."
+            exit 1
+          else
+            "$hook"
+          fi
+
+  edge:
+    name: Edge router (Caddy)
+    needs: apps
+    # Runs even if an app leg failed: R6 is the one check that must never be
+    # hidden behind another failure.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      # This job IS the edge, so it is the one place the workflow names an app.
+      EDGE_APP: caddy
+      # Not a secret: the same wildcard is spelled out in apps/caddy/Caddyfile.
+      EDGE_WILDCARD: '*.az.snehasish-chakraborty.com'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # check-edge-routes.sh reads every app's compose file, so each needs its
+      # template in place, as in the apps job.
+      - name: Env templates
+        run: |
+          for t in apps/*/.env.example; do
+            [ -f "$t" ] || continue
+            d="$(dirname "$t")"
+            [ -f "$d/.env" ] || cp "$t" "$d/.env"
+          done
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Same cache scope as the apps job's leg, read-only here.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/${{ env.EDGE_APP }}
+          load: true
+          push: false
+          tags: homelab-${{ env.EDGE_APP }}:ci
+          cache-from: type=gha,scope=app-${{ env.EDGE_APP }}
+
+      # The Caddyfile reads the subscription and resource group from the
+      # environment; validate needs values but never uses them (no Azure call).
+      - name: caddy validate
+        run: |
+          docker run --rm \
+            -e AZURE_SUBSCRIPTION_ID=00000000-0000-0000-0000-000000000000 \
+            -e AZURE_DNS_RESOURCE_GROUP=homelab-rg \
+            -v "$PWD/apps/$EDGE_APP/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            "homelab-$EDGE_APP:ci" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: caddy adapt
+        run: |
+          docker run --rm \
+            -v "$PWD/apps/$EDGE_APP/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            "homelab-$EDGE_APP:ci" caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
+            >"$RUNNER_TEMP/caddy.json"
+
+      - name: R6 — wildcard is the only certificate subject
+        run: scripts/ci/check-caddy-r6.sh "$RUNNER_TEMP/caddy.json" "$EDGE_WILDCARD"
+
+      - name: Routes — every app reachable, every route has an app
+        if: ${{ !cancelled() }}
+        run: scripts/ci/check-edge-routes.sh "$RUNNER_TEMP/caddy.json" "apps/$EDGE_APP"

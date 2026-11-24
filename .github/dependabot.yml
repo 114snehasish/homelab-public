@@ -34,3 +34,12 @@ updates:
     directory: "/compute/vm"
     schedule:
       interval: "weekly"
+
+  # Tracks the two FROM lines in apps/caddy/Dockerfile (#40). It cannot see the
+  # caddy-dns/azure version: that is an argument to `RUN xcaddy build`, which
+  # Dependabot does not parse, so the plugin stays a manual bump. Its PRs need
+  # no secrets, so apps-check.yml gives them a real build + validate.
+  - package-ecosystem: "docker"
+    directory: "/apps/caddy"
+    schedule:
+      interval: "weekly"

@@ -75,6 +75,19 @@ Everything above is for **local runs**. A Claude Code cloud session in the perso
 - `main` is force-mirrored to a public GitHub repo on every push (`mirror.yml`) — treat everything committed as public; never commit tfvars, keys, or `.env`.
 - `docs/technical_reference.md` predates the dns/cloudflare modules — update `docs/` when adding or changing modules.
 - `lint.yml` (tflint + checkov, both blocking) runs repo-wide on any `.tf` change, separate from the five per-module pipelines. `.tflint.hcl` is a single repo-root config covering all five modules via `tflint --recursive`. Checkov findings that are real but not fixable yet are silenced with an inline `# checkov:skip=<ID>:<reason>` comment placed *inside* the resource block (a comment above the `resource` line is out of the range checkov scans) — not a separate baseline file.
+- `apps-check.yml` (#40, PR A) is the only CI that reads `apps/**`; `lint.yml` never does. **A new app gets checked with no workflow edit.** A `discover` job lists every `apps/*/` that holds a `docker-compose.yml`, and an `apps` matrix runs one leg per app (`fail-fast: false`):
+  - `docker compose config`, against the app's `.env.example`;
+  - an image build, only if the app has a `Dockerfile`, with a GHA cache scoped `app-<app>`;
+  - the house rules in `scripts/ci/check-app-conventions.sh`;
+  - the app's own `apps/<app>/check.sh`, if present. It must be executable; a non-executable hook fails rather than being skipped. The built image tag, if any, is in `$APP_IMAGE`.
+
+  The house rules are enforced, not just documented: every service on the external `web` network, bind sources only under `/data/<app>/` or the app's own directory, `restart: unless-stopped`, images pinned to an exact tag or digest (`build:` exempt), no published ports outside the script's `EDGE_APPS=(caddy)`, and `container_name` equal to the directory name, with sidecars named `<app>-<role>`.
+
+  The `edge` job ("Edge router (Caddy)") runs after the matrix, and runs **even if an app leg failed**, so R6 is never hidden behind another failure. It is the one place the workflow names an app. It runs `caddy validate`, `scripts/ci/check-caddy-r6.sh` and `scripts/ci/check-edge-routes.sh`, all against `caddy adapt` output:
+  - **R6 enforces the one-site-block rule:** the wildcard must be the only top-level site host and the only TLS subject, with no on-demand TLS. A host matcher inside a `handle` is not top-level, so per-app routes pass.
+  - **The route check fails both ways:** an app with no `reverse_proxy <app>:<port>` route ("deployed but unreachable"), and a route whose upstream no compose file defines.
+
+  None of it needs an Azure login or secrets, so unlike the Terraform checks it is meaningful on Dependabot PRs, including the `docker` ecosystem entry for `/apps/caddy`. A green run proves the config parses, the conventions hold and R6 holds, not that the stack works on the node.
 
 ## Conventions
 

@@ -3,9 +3,11 @@
 # one (#39) for the *.az.snehasish-chakraborty.com wildcard cert's DNS-01
 # challenge.
 #
-# Both stages are pinned to an exact tag on purpose: this repo's Dependabot
-# config (.github/dependabot.yml) has no `docker` ecosystem, so nothing
-# watches these tags for updates — bumping them is a manual, deliberate act.
+# Both stages are pinned to an exact tag on purpose. Dependabot's `docker`
+# ecosystem (.github/dependabot.yml, #40) proposes bumps to the two FROM lines
+# as PRs, and apps-check.yml builds and validates each one. The plugin version
+# below is invisible to Dependabot (it is an xcaddy argument, not an image
+# tag), so bumping it stays a manual, deliberate act.
 FROM caddy:2.11.4-builder AS builder
 
 # caddy-dns/azure@v0.6.0 is the latest tag as of writing. It authenticates to
