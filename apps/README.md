@@ -25,10 +25,13 @@ Everything else in this repo deploys through GitHub Actions. `apps/**` does not 
 Until then, this file is the deploy mechanism: read it top to bottom the first time, then treat
 Step 3 onward as the repeatable loop for every change.
 
-**`apps/**` triggers no CI check today.** `lint.yml` filters on `**/*.tf`, and its checkov job is
-pinned to `framework: terraform` — neither reads a compose file or a Caddyfile. A PR touching only
-`apps/` gets no lint, no plan comment, nothing but a human review. Keep that in mind reading a
-green PR check: it proves the Terraform half of a change, never the apps half.
+**`apps/**` is checked, not deployed, by CI.** `apps-check.yml` (#40, PR A) runs on every PR and
+push to `main` that touches `apps/**`. It checks that every compose file parses, that the Caddy
+image builds, and that Caddy accepts the Caddyfile. It also checks R6: Caddy's adapted config must
+name the zone wildcard as its only site and only certificate subject, with no on-demand TLS
+(`scripts/ci/check-caddy-r6.sh`). A second site block fails the PR, so the rule in the Caddyfile's
+header is now enforced as well as written down. A green check is still not a working deploy:
+nothing in it talks to Azure, IMDS or ACME, and the steps below remain the only way to ship.
 
 ## What Caddy needs before it can run
 

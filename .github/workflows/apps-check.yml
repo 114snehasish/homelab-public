@@ -1,0 +1,108 @@
+name: Apps check
+
+# The first CI that reads anything under apps/ (E03.4 PR A, #40). Before this,
+# lint.yml filtered on **/*.tf only, so a PR touching only a compose file or the
+# Caddyfile got no check at all.
+#
+# What a green run proves, and nothing more:
+#   - every app's compose file parses (`docker compose config`);
+#   - the Caddy image builds;
+#   - Caddy accepts the Caddyfile with its DNS plugin loaded (`caddy validate`);
+#   - R6: the only certificate Caddy would ever request is the zone wildcard
+#     (scripts/ci/check-caddy-r6.sh, run against `caddy adapt` output).
+# It does NOT prove the stack works on the node: nothing here talks to Azure,
+# IMDS or ACME. That is the post-deploy edge check (PR C) and resume's verify.
+#
+# No Azure login and no secrets, so it also runs green on Dependabot PRs. That
+# makes it the meaningful check for the docker ecosystem bumps this PR enables.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'scripts/ci/check-caddy-r6.sh'
+      - '.github/workflows/apps-check.yml'
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'scripts/ci/check-caddy-r6.sh'
+      - '.github/workflows/apps-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apps-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Not a secret: the same wildcard is spelled out in apps/caddy/Caddyfile.
+  EDGE_WILDCARD: '*.az.snehasish-chakraborty.com'
+
+jobs:
+  compose:
+    name: Compose config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # `env_file: .env` makes `config` fail on a missing file, and .env is
+      # never committed, so each app is checked against its committed template.
+      - name: docker compose config (every app)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(apps/*/docker-compose.yml)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no apps/*/docker-compose.yml found"; exit 1; }
+          for f in "${files[@]}"; do
+            d="$(dirname "$f")"
+            if [ -f "$d/.env.example" ] && [ ! -f "$d/.env" ]; then
+              cp "$d/.env.example" "$d/.env"
+            fi
+            docker compose -f "$f" config -q
+            echo "ok: $f"
+          done
+
+  caddy:
+    name: Caddy build + validate + R6
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The xcaddy compile is ~4 min uncached. The GHA cache keeps the builder
+      # stage, so a Caddyfile-only change does not recompile Caddy.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/caddy
+          load: true
+          push: false
+          tags: homelab-caddy:ci
+          cache-from: type=gha,scope=homelab-caddy
+          cache-to: type=gha,scope=homelab-caddy,mode=max
+
+      # The Caddyfile reads the subscription and resource group from the
+      # environment; validate needs values but never uses them (no Azure call).
+      - name: caddy validate
+        run: |
+          docker run --rm \
+            -e AZURE_SUBSCRIPTION_ID=00000000-0000-0000-0000-000000000000 \
+            -e AZURE_DNS_RESOURCE_GROUP=homelab-rg \
+            -v "$PWD/apps/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            homelab-caddy:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: R6 — wildcard is the only certificate subject
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/apps/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            homelab-caddy:ci caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
+            >"$RUNNER_TEMP/caddy.json"
+          scripts/ci/check-caddy-r6.sh "$RUNNER_TEMP/caddy.json" "$EDGE_WILDCARD"
