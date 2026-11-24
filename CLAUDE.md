@@ -81,13 +81,20 @@ Everything above is for **local runs**. A Claude Code cloud session in the perso
   - the house rules in `scripts/ci/check-app-conventions.sh`;
   - the app's own `apps/<app>/check.sh`, if present. It must be executable; a non-executable hook fails rather than being skipped. The built image tag, if any, is in `$APP_IMAGE`.
 
-  The house rules are enforced, not just documented: every service on the external `web` network, bind sources only under `/data/<app>/` or the app's own directory, `restart: unless-stopped`, images pinned to an exact tag or digest (`build:` exempt), no published ports outside the script's `EDGE_APPS=(caddy)`, and `container_name` equal to the directory name, with sidecars named `<app>-<role>`.
+  The house rules are enforced, not just documented: every service on the external `web` network, bind sources only under `/data/<app>/` or the app's own directory, `restart: unless-stopped`, images pinned to an exact tag or digest, no `build:` at all (the node never builds), an app with a `Dockerfile` naming `ghcr.io/114snehasish/homelab-<app>:<tag>`, no published ports outside the script's `EDGE_APPS=(caddy)`, and `container_name` equal to the directory name, with sidecars named `<app>-<role>`.
 
   The `edge` job ("Edge router (Caddy)") runs after the matrix, and runs **even if an app leg failed**, so R6 is never hidden behind another failure. It is the one place the workflow names an app. It runs `caddy validate`, `scripts/ci/check-caddy-r6.sh` and `scripts/ci/check-edge-routes.sh`, all against `caddy adapt` output:
   - **R6 enforces the one-site-block rule:** the wildcard must be the only top-level site host and the only TLS subject, with no on-demand TLS. A host matcher inside a `handle` is not top-level, so per-app routes pass.
   - **The route check fails both ways:** an app with no `reverse_proxy <app>:<port>` route ("deployed but unreachable"), and a route whose upstream no compose file defines.
 
   None of it needs an Azure login or secrets, so unlike the Terraform checks it is meaningful on Dependabot PRs, including the `docker` ecosystem entry for `/apps/caddy`. A green run proves the config parses, the conventions hold and R6 holds, not that the stack works on the node.
+- **The node pulls app images; it never builds them** (#40, PR B). `apps-image.yml` publishes every `apps/<app>/Dockerfile` to GHCR at exactly the reference the app's compose `image:` line names. That line is the single source of truth, and today it is `ghcr.io/114snehasish/homelab-caddy:2.11.9-azuredns0.6.0`.
+  - **Tags are immutable.** Each image carries the sha256 of its Dockerfile as the label `homelab.dockerfile-sha256`, and `scripts/ci/app-image-state.sh` compares it with the checkout. A Dockerfile change without a tag bump is `stale`, and the PR fails; a `stale` tag is never rebuilt. So a Dependabot `FROM` bump stays red until someone bumps the compose tag as well.
+  - **`apps/caddy/check.sh` keeps Caddy's versions in step.** The builder and runtime `FROM` versions must match, because the binary comes from the builder. Dependabot once bumped only the runtime, because the `-builder` tag was published later. The tag must be `<caddy>-azuredns<plugin>[-r<N>]`, and the built binary must report that version and include `dns.providers.azure`.
+  - **Only the `publish` job holds `packages: write`,** and it never runs on a `pull_request`.
+  - **The package is public on purpose,** so the edge VM pulls anonymously and holds no registry credential. ACR Basic would cost more than the whole parked lab. The first push creates the package private, because the repo is private, and it must be flipped public by hand once. **Never `docker login` on the VM to work around a private package.**
+  - **The `org.opencontainers.image.source` label is overridden at build**, because Caddy's base image carries `caddyserver/caddy-docker`'s and GHCR links a package to whatever repo that label names.
+  - **GHCR answers an anonymous `403` for a package that doesn't exist**, the same as for a private one. The state script treats a `403` as "not yet published". That is sound only because a token that can push can also read.
 
 ## Conventions
 

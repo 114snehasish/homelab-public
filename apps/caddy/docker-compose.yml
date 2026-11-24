@@ -1,8 +1,13 @@
 # Caddy — the single public edge. See apps/README.md for the pattern this
 # file is an instance of, and the manual deploy runbook.
+#
+# The node pulls this image; it never builds (#40, PR B). apps-image.yml builds
+# ./Dockerfile and publishes it to GHCR at exactly this reference, so this line
+# is the single source of truth for what runs. Bump the tag whenever the
+# Dockerfile changes: tags are immutable, and CI fails the PR until you do.
 services:
   caddy:
-    build: .
+    image: ghcr.io/114snehasish/homelab-caddy:2.11.9-azuredns0.6.0
     container_name: caddy
     restart: unless-stopped
     ports:

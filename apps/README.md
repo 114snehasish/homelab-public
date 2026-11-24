@@ -112,8 +112,20 @@ of the public mirror on principle, same as every other `.env` in this repo.
 
 ```bash
 rsync -av --exclude='.env' apps/caddy/ azureuser@<public_ip>:/data/apps/caddy/
-ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose up -d --build'
+ssh azureuser@<public_ip> 'cd /data/apps/caddy && docker compose pull && docker compose up -d'
 ```
+
+**The node pulls, it never builds** (#40, PR B). `apps-image.yml` builds `apps/caddy/Dockerfile` in
+CI and publishes it to `ghcr.io/114snehasish/homelab-caddy` at exactly the tag the compose file
+names. A pull takes seconds; the old on-node `--build` compiled for ~4 minutes and left 2.36 GB of
+build cache behind. Two preconditions:
+
+- **The tag must already be published.** After a merge that bumps it, wait for the `Apps image`
+  run on `main` to go green before running Step 3, or `pull` fails with `manifest unknown`.
+- **The package must be public.** The first push creates it private, because this repo is private.
+  Flip it once in the package's settings on GitHub (*Package settings → Change visibility →
+  Public*). Until then an anonymous pull fails with `denied`. Never fix that with a
+  `docker login` on the VM: the edge node holds no registry credential, by design.
 
 `--exclude='.env'` is belt-and-suspenders: `.env` is gitignored so a plain `rsync -av` of a local
 checkout would not send it anyway, but excluding it explicitly means this command is still correct
@@ -215,8 +227,11 @@ with a message saying what to change:
 - bind sources sit only under `/data/<name>/` (state) or inside `apps/<name>/` (config shipped with
   the app), never the home directory or anywhere else on the OS disk;
 - every service sets `restart: unless-stopped`;
-- every pulled image has an exact tag or a digest, never `latest` or no tag (`build:` services are
-  exempt);
+- no `build:`, because the node never builds; every image has an exact tag or a digest, never
+  `latest` or no tag;
+- an app with its own `Dockerfile` names `ghcr.io/114snehasish/homelab-<name>:<tag>` as its main
+  service's image. `apps-image.yml` publishes exactly that reference. **Bump the tag whenever the
+  Dockerfile changes**: tags are immutable, and the PR fails until the tag is bumped;
 - no `ports:`, because only the edge publishes ports;
 - `container_name` equals the directory name; sidecars are `<name>-<role>`, for example
   `miniflux-db`.
@@ -233,7 +248,9 @@ the house rules, with the built image's tag in `$APP_IMAGE` when the app has a D
    `reverse_proxy <name>:<port>` route ("deployed but unreachable"). It also fails a route whose
    upstream no app's compose file defines, and any second site block (R6).
 3. Deploy the app's own compose stack (Step 3's pattern, its own directory), then redeploy Caddy so
-   the new route takes effect: `docker compose up -d` picks up a changed, bind-mounted Caddyfile
-   without a rebuild.
+   the new route takes effect, with `docker compose up -d --force-recreate caddy`. A plain
+   `up -d` is **not** enough. `rsync` replaces the Caddyfile with a new file rather than editing it
+   in place. Docker's single-file bind mount stays on the old file, and Compose sees no config
+   change, so the container keeps serving the old routes.
 4. Verify the same way as Step 5 above, plus that the wildcard cert's SAN is unchanged — adding a
    route must never add a hostname to the certificate.

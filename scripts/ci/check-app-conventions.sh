@@ -18,8 +18,11 @@
 #      recreates the source as a root-owned directory (the 2026-10-06 failure);
 #   3. `restart: unless-stopped` — park relies on it to bring containers back
 #      after the graceful stop (ADR-0009 §4);
-#   4. every pulled image has an exact tag or a digest, never `latest` or none —
-#      a resume must not silently change what runs (`build:` services exempt);
+#   4. the node never builds: no `build:`, and every image has an exact tag or
+#      a digest, never `latest` or none — a resume must not silently change what
+#      runs. An app with a Dockerfile publishes it through apps-image.yml, and
+#      its main service's image must be ${IMAGE_PREFIX}/homelab-<app>:<tag>
+#      (default prefix ghcr.io/114snehasish), the reference that workflow pushes;
 #   5. no published host ports outside EDGE_APPS — every other app is reached
 #      through Caddy on `web`, never directly (and the NSG is not the guard);
 #   6. container_name is set and predictable: the main service is named after
@@ -38,6 +41,8 @@ dir="${1:?app dir, e.g. apps/homepage}"
 dir="${dir%/}"
 app="$(basename "$dir")"
 compose="${dir}/docker-compose.yml"
+image_prefix="${IMAGE_PREFIX:-ghcr.io/114snehasish}"
+main_img=""
 fail=0
 
 err() {
@@ -101,19 +106,20 @@ while IFS= read -r s; do
     err "service '$s' has restart '${restart:-unset}'; set 'restart: unless-stopped', which park/resume relies on to bring it back."
   fi
 
-  # Rule 4: pinned images.
-  if jq -e '.build == null' >/dev/null <<<"$svc"; then
-    img="$(jq -r '.image // ""' <<<"$svc")"
-    last="${img##*/}"
-    if [[ -z "$img" ]]; then
-      err "service '$s' has neither image nor build."
-    elif [[ "$img" == *@sha256:* ]]; then
-      :
-    elif [[ "$last" != *:* ]]; then
-      err "service '$s' image '$img' has no tag; pin an exact version, e.g. '${img}:1.2.3'."
-    elif [[ "${last##*:}" == "latest" ]]; then
-      err "service '$s' image '$img' uses 'latest'; pin an exact version so a resume cannot change what runs."
-    fi
+  # Rule 4: the node never builds, and pulls only pinned images.
+  if jq -e '.build != null' >/dev/null <<<"$svc"; then
+    err "service '$s' uses 'build:'; the node never builds. Put the Dockerfile in ${dir}/ (apps-image.yml publishes it) and reference ${image_prefix}/homelab-${app}:<tag> with 'image:'."
+  fi
+  img="$(jq -r '.image // ""' <<<"$svc")"
+  last="${img##*/}"
+  if [[ -z "$img" ]]; then
+    err "service '$s' has no image; pin one with 'image: <name>:<exact version>'."
+  elif [[ "$img" == *@sha256:* ]]; then
+    :
+  elif [[ "$last" != *:* ]]; then
+    err "service '$s' image '$img' has no tag; pin an exact version, e.g. '${img}:1.2.3'."
+  elif [[ "${last##*:}" == "latest" ]]; then
+    err "service '$s' image '$img' uses 'latest'; pin an exact version so a resume cannot change what runs."
   fi
 
   # Rule 5: only the edge publishes ports.
@@ -127,6 +133,7 @@ while IFS= read -r s; do
     err "service '$s' has no container_name; set it to '${app}' for the main service or '${app}-<role>' for a sidecar."
   elif [[ "$cn" == "$app" ]]; then
     main_count=$((main_count + 1))
+    main_img="$img"
   elif [[ "$cn" != "${app}-"* ]]; then
     err "service '$s' container_name '$cn' must be '${app}' (main service) or start with '${app}-' (sidecar)."
   fi
@@ -134,6 +141,13 @@ done <<<"$services"
 
 if ((main_count != 1)); then
   err "exactly one service must have container_name '${app}' (found ${main_count}); it is the name Caddy proxies to."
+fi
+
+# Rule 4, published half: a Dockerfile here means apps-image.yml publishes
+# ${image_prefix}/homelab-<app>:<tag> from the compose image line, so the main
+# service must name exactly that repository.
+if [[ -f "$dir/Dockerfile" && "$main_count" -eq 1 && "$main_img" != "${image_prefix}/homelab-${app}:"* ]]; then
+  err "${dir}/Dockerfile exists, so the main service's image must be '${image_prefix}/homelab-${app}:<tag>' (apps-image.yml publishes exactly that), not '${main_img}'."
 fi
 
 if ((fail == 0)); then
