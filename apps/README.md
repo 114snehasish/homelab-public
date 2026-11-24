@@ -26,12 +26,13 @@ Until then, this file is the deploy mechanism: read it top to bottom the first t
 Step 3 onward as the repeatable loop for every change.
 
 **`apps/**` is checked, not deployed, by CI.** `apps-check.yml` (#40, PR A) runs on every PR and
-push to `main` that touches `apps/**`. It checks that every compose file parses, that the Caddy
-image builds, and that Caddy accepts the Caddyfile. It also checks R6: Caddy's adapted config must
-name the zone wildcard as its only site and only certificate subject, with no on-demand TLS
-(`scripts/ci/check-caddy-r6.sh`). A second site block fails the PR, so the rule in the Caddyfile's
-header is now enforced as well as written down. A green check is still not a working deploy:
-nothing in it talks to Azure, IMDS or ACME, and the steps below remain the only way to ship.
+push to `main` that touches `apps/**`. For every app it checks that the compose file parses, builds
+the image if the app has a Dockerfile, and enforces the house rules below. For the edge it checks
+that Caddy accepts the Caddyfile and that every app has a route. It also checks R6: Caddy's adapted
+config must name the zone wildcard as its only site and only certificate subject, with no on-demand
+TLS (`scripts/ci/check-caddy-r6.sh`). A second site block fails the PR, so the rule in the
+Caddyfile's header is now enforced as well as written down. A green check is still not a working
+deploy: nothing in it talks to Azure, IMDS or ACME, and the steps below remain the only way to ship.
 
 ## What Caddy needs before it can run
 
@@ -205,11 +206,32 @@ disk, and every later resume is hands-off. Re-run the failed verify job to confi
 
 ## Adding a real app
 
+**CI picks the new directory up by itself.** `apps-check.yml` discovers every `apps/*/` that holds a
+`docker-compose.yml` and gives it its own check, so adding an app needs no workflow edit. That check
+enforces the house rules (`scripts/ci/check-app-conventions.sh`), and a PR that breaks one fails
+with a message saying what to change:
+
+- every service joins the `web` network, declared `external: true`;
+- bind sources sit only under `/data/<name>/` (state) or inside `apps/<name>/` (config shipped with
+  the app), never the home directory or anywhere else on the OS disk;
+- every service sets `restart: unless-stopped`;
+- every pulled image has an exact tag or a digest, never `latest` or no tag (`build:` services are
+  exempt);
+- no `ports:`, because only the edge publishes ports;
+- `container_name` equals the directory name; sidecars are `<name>-<role>`, for example
+  `miniflux-db`.
+
+Per-app config linting goes in an optional, executable `apps/<name>/check.sh`. CI runs it after
+the house rules, with the built image's tag in `$APP_IMAGE` when the app has a Dockerfile.
+
 1. `mkdir apps/<name>`, add its `docker-compose.yml` (join network `web`, mount its state under
    `/data/<name>`). It deploys to `/data/apps/<name>` on the VM, never the home directory.
 2. Add a `handle` block to the **existing** wildcard site in `apps/caddy/Caddyfile`, keyed by a
    `host` matcher for `<name>.az.snehasish-chakraborty.com` — proxying to the app's container name
    on the `web` network (e.g. `reverse_proxy <name>:8080`). Do not add a new top-level site block.
+   **This route is required, and CI checks it.** The edge job fails a PR that adds an app with no
+   `reverse_proxy <name>:<port>` route ("deployed but unreachable"). It also fails a route whose
+   upstream no app's compose file defines, and any second site block (R6).
 3. Deploy the app's own compose stack (Step 3's pattern, its own directory), then redeploy Caddy so
    the new route takes effect: `docker compose up -d` picks up a changed, bind-mounted Caddyfile
    without a rebuild.
