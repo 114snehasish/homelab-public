@@ -8,7 +8,7 @@
 # as PRs, and apps-check.yml builds and validates each one. The plugin version
 # below is invisible to Dependabot (it is an xcaddy argument, not an image
 # tag), so bumping it stays a manual, deliberate act.
-FROM caddy:2.11.4-builder AS builder
+FROM caddy:2.11.8-builder AS builder
 
 # caddy-dns/azure@v0.6.0 is the latest tag as of writing. It authenticates to
 # Azure DNS via libdns/azure, which falls back to a managed identity when
@@ -16,6 +16,6 @@ FROM caddy:2.11.4-builder AS builder
 # apps/caddy/Caddyfile. No credential file, no secret, ever, on this VM.
 RUN xcaddy build --with github.com/caddy-dns/azure@v0.6.0
 
-FROM caddy:2.11.4
+FROM caddy:2.11.9
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
