@@ -39,6 +39,9 @@ updates:
   # caddy-dns/azure version: that is an argument to `RUN xcaddy build`, which
   # Dependabot does not parse, so the plugin stays a manual bump. Its PRs need
   # no secrets, so apps-check.yml gives them a real build + validate.
+  # Every such PR stays red until a human also bumps the image tag in
+  # apps/caddy/docker-compose.yml (tags are immutable, apps-image.yml), and
+  # until both FROM lines agree (apps/caddy/check.sh). Merging it is a rollout.
   - package-ecosystem: "docker"
     directory: "/apps/caddy"
     schedule:
